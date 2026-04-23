@@ -1,4 +1,4 @@
-# telegram_predictor_bot.py - VERSIÓN CORREGIDA (AUTO-BET FUNCIONAL)
+# bot.py - PREDICTOR PRO BOT CON AUTO-APAGADO POR HORARIO
 import json
 import os
 import threading
@@ -6,14 +6,23 @@ import time
 import requests
 import asyncio
 import re
+import sys
+import signal
 from collections import deque
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
+# Intentar importar pytz para zona horaria, si no está, usar timezone simple
+try:
+    import pytz
+    HAS_PYTZ = True
+except ImportError:
+    HAS_PYTZ = False
+
 # ==================== CONFIGURACIÓN ====================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "7286614485:AAFv_tLfIJT-qRvlKIwXwVA41eo6cObnuFU")
+BOT_TOKEN = "7286614485:AAFv_tLfIJT-qRvlKIwXwVA41eo6cObnuFU"
 ADMIN_IDS = [5541162744]
 ADMIN_GROUP_ID = -1002513713257
 MY_WALLET_BEP20 = "0x621917958C7ac81190e9f876C23D6B9914f31263"
@@ -24,6 +33,35 @@ LICENSE_PLANS = {
     "1y": {"price": 50, "days": 365, "type": "single", "name": "📅 1 Año"},
     "lifetime_multiuser": {"price": 45, "days": 9999, "type": "multi", "max_users": 5, "name": "👥 Multiuser Lifetime"}
 }
+
+# ==================== AUTO-APAGADO POR HORARIO ====================
+def auto_stop_check() -> bool:
+    """Verifica si el bot debe apagarse según el horario"""
+    if HAS_PYTZ:
+        tz = pytz.timezone('America/Havana')
+        now = datetime.now(tz)
+    else:
+        # Fallback: usar UTC-5
+        now = datetime.utcnow() - timedelta(hours=5)
+    
+    hora = now.hour
+    
+    # Horarios de APAGADO: 12pm-1pm, 6pm-7pm, 12am-8am
+    if 12 <= hora < 13:  # 12pm a 1pm
+        return True
+    elif 18 <= hora < 19:  # 6pm a 7pm
+        return True
+    elif 0 <= hora < 8:  # 12am a 8am
+        return True
+    
+    return False
+
+def should_shutdown():
+    """Funcióseparaón para verificar apagado"""
+    if auto_stop_check():
+        print(f"⏹️ Apagando bot por horario. Hora: {datetime.now()}")
+        return True
+    return False
 
 # ==================== LICENCIA MANAGER ====================
 class LicenseManager:
@@ -163,216 +201,157 @@ class UserAccount:
         else:
             return f"Same bet: ${self.current_bet:.2f}"
 
-# ==================== PATTERN DETECTOR ====================
-class PatternDetector:
-    def __init__(self):
-        self.reset()
-    
-    def reset(self):
-        self.waiting_for_pattern = True
-        self.using_base_logic = False
-        self.last_pattern_used = None
-        self.consecutive_wins = 0
-        self.rounds_since_loss = 0
-    
-    def detect_pattern(self, history):
-        if len(history) < 2:
-            return None
-        
-        history_list = list(history)
-        
-        if len(history_list) >= 3:
-            if history_list[-3] == 'blue' and history_list[-2] == 'red' and history_list[-1] == 'red':
-                return 'blue'
-            if history_list[-3] == 'red' and history_list[-2] == 'blue' and history_list[-1] == 'blue':
-                return 'red'
-        
-        if len(history_list) >= 5:
-            if (history_list[-5] == 'blue' and history_list[-4] == 'red' and 
-                history_list[-3] == 'red' and history_list[-2] == 'red' and history_list[-1] == 'red'):
-                return 'red'
-            if (history_list[-5] == 'red' and history_list[-4] == 'blue' and 
-                history_list[-3] == 'blue' and history_list[-2] == 'blue' and history_list[-1] == 'blue'):
-                return 'blue'
-        
-        if len(history_list) >= 3:
-            if history_list[-3] == 'blue' and history_list[-2] == 'red' and history_list[-1] == 'blue':
-                return 'red'
-            if history_list[-3] == 'red' and history_list[-2] == 'blue' and history_list[-1] == 'red':
-                return 'blue'
-        
-        if len(history_list) >= 5:
-            if (history_list[-5] == 'blue' and history_list[-4] == 'red' and 
-                history_list[-3] == 'blue' and history_list[-2] == 'red' and history_list[-1] == 'red'):
-                return 'blue'
-            if (history_list[-5] == 'red' and history_list[-4] == 'blue' and 
-                history_list[-3] == 'red' and history_list[-2] == 'blue' and history_list[-1] == 'blue'):
-                return 'red'
-        
-        if len(history_list) >= 2:
-            if history_list[-2] == 'blue' and history_list[-1] == 'blue':
-                return 'red'
-            if history_list[-2] == 'red' and history_list[-1] == 'red':
-                return 'blue'
-        
-        return None
-
-# ==================== BASE LOGIC ====================
-class BaseLogic:
-    def __init__(self):
-        self.last_pattern_used = None
-    
-    def get_prediction(self, history):
-        if not history:
-            return None
-        
-        last_color = history[-1]
-        
-        if len(history) >= 3:
-            if (history[-3] != history[-2] and 
-                history[-2] != history[-1] and 
-                history[-3] == history[-1]):
-                return 'blue' if last_color == 'red' else 'red'
-        
-        if len(history) >= 2 and self.last_pattern_used != "double":
-            if history[-2] == history[-1]:
-                self.last_pattern_used = "double"
-                return 'blue' if last_color == 'red' else 'red'
-        
-        self.last_pattern_used = None
-        return last_color
-
 # ==================== USER PREDICTOR ====================
 class UserPredictor:
     def __init__(self, user_id: int):
         self.user_id = user_id
-        self.pattern_detector = PatternDetector()
-        self.base_logic = BaseLogic()
-        self.session_history = deque(maxlen=50)
-        self.last_prediction = None
-        self.waiting_for_pattern = True
-        self.waiting_rounds = 0
-        self.min_wait_rounds = 1
-        self.consecutive_wins = 0
-        self.consecutive_losses = 0
+        self.history_window = deque(maxlen=50)
+        self.pending_bet = None
+        self.last_color = None
+        self.active = True
+        self.waiting_for_5 = True
+        self.waiting_for_pattern = False
+        self.rounds_to_wait = 0  # Espera después de LOSS
+        
         self.total_wins = 0
         self.total_losses = 0
-        self.active = True
+        self.consecutive_wins = 0
+        self.consecutive_losses = 0
+        
         self.on_status = None
         self.on_prediction = None
         self.on_result = None
     
     def _get_historial_str(self):
-        last_colors = list(self.session_history)[-5:]
+        last_5 = list(self.history_window)[-5:] if len(self.history_window) >= 5 else list(self.history_window)
         history_emojis = []
-        for c in last_colors:
+        for c in last_5:
             history_emojis.append("🔴" if c == 'red' else "🔵")
-        return ''.join(history_emojis) if history_emojis else ""
+        return ''.join(history_emojis) if history_emojis else "---"
     
     def _get_estado_str(self):
-        if self.last_prediction is not None:
-            return "Esperando resultado"
-        elif self.waiting_rounds > 0:
-            return f"Esperando {self.waiting_rounds} ronda"
-        elif self.waiting_for_pattern:
-            return "Buscando patrón"
+        if self.rounds_to_wait > 0:
+            return f"Esperando después de LOSS ({self.rounds_to_wait})"
+        if self.waiting_for_5:
+            return f"Esperando 5 ({len(self.history_window)}/5)"
+        if self.waiting_for_pattern:
+            return "Patrón bloqueado"
+        if self.pending_bet is not None:
+            pending_emoji = "🔴" if self.pending_bet == 'red' else "🔵"
+            return f"Esperando: {pending_emoji}"
+        return "Listo"
+    
+    def _get_minority_color(self) -> str:
+        last_5 = list(self.history_window)[-5:]
+        blues = last_5.count('blue')
+        reds = last_5.count('red')
+        
+        if blues < reds:
+            return 'blue'
+        elif reds < blues:
+            return 'red'
         else:
-            return "Lógica base"
+            return last_5[-1]
+    
+    def _should_block(self) -> bool:
+        if len(self.history_window) < 5:
+            return False
+        
+        last_5 = list(self.history_window)[-5:]
+        
+        if all(c == last_5[0] for c in last_5):
+            return True
+        
+        if last_5[0] == 'blue' and last_5.count('blue') == 1:
+            return True
+        
+        if last_5[0] == 'red' and last_5.count('red') == 1:
+            return True
+        
+        return False
     
     def process_color(self, color: str):
         if not self.active:
             return
         
-        self.session_history.append(color)
+        self.last_color = color
+        self.history_window.append(color)
         
-        # Enviar mensaje de historial + estado
-        if self.on_status:
+        # Verificar resultado de apuesta pendiente
+        if self.pending_bet is not None:
+            self._verify_result(color)
+        
+        # Manejar espera después de LOSS
+        if self.rounds_to_wait > 0:
+            self.rounds_to_wait -= 1
+            if self.on_status:
+                historial = self._get_historial_str()
+                estado = self._get_estado_str()
+                color_emoji = "🔴" if color == 'red' else "🔵"
+                color_text = "ROJO" if color == 'red' else "AZUL"
+                self.on_status(f"{color_emoji} {color_text}\nHistorial: {historial}\nEstado: {estado}")
+            return
+        
+        # Verificar si hay que bloquear por patrón
+        if self._should_block():
+            self.waiting_for_pattern = True
+        else:
+            self.waiting_for_pattern = False
+        
+        # Enviar estado
+        if self.on_status and self.pending_bet is None:
             historial = self._get_historial_str()
             estado = self._get_estado_str()
             color_emoji = "🔴" if color == 'red' else "🔵"
             color_text = "ROJO" if color == 'red' else "AZUL"
             self.on_status(f"{color_emoji} {color_text}\nHistorial: {historial}\nEstado: {estado}")
         
-        if self.waiting_rounds > 0:
-            self.waiting_rounds -= 1
-            return
-        
-        if self.last_prediction is None:
+        # Generar nueva predicción
+        if self.pending_bet is None and len(self.history_window) >= 5 and not self.waiting_for_pattern:
             self._make_prediction()
-        else:
-            self._verify_prediction(color)
     
-    def _make_prediction(self):
-        if len(self.session_history) < 2:
-            return
+    def _verify_result(self, actual_color: str):
+        is_win = (self.pending_bet == actual_color)
         
-        prediction = None
-        source = ""
-        
-        if self.waiting_for_pattern:
-            prediction = self.pattern_detector.detect_pattern(self.session_history)
-            if prediction:
-                self.waiting_for_pattern = False
-                source = "PATRÓN"
-        else:
-            prediction = self.base_logic.get_prediction(list(self.session_history))
-            source = "LÓGICA BASE"
-        
-        if prediction:
-            self.last_prediction = prediction
-            pred_emoji = "🔴" if prediction == 'red' else "🔵"
-            pred_text = "ROJO" if prediction == 'red' else "AZUL"
-            
-            # Enviar mensaje de SEÑAL
-            if self.on_prediction:
-                self.on_prediction(f"SEÑAL {pred_emoji}\n{source}")
-    
-    def _verify_prediction(self, actual_color):
-        if self.last_prediction is None:
-            return
-        
-        is_correct = (self.last_prediction == actual_color)
-        actual_emoji = "🔴" if actual_color == 'red' else "🔵"
-        
-        if is_correct:
+        if is_win:
             self.consecutive_wins += 1
             self.consecutive_losses = 0
             self.total_wins += 1
-            self.waiting_for_pattern = False
-            self.waiting_rounds = 0
+            self.rounds_to_wait = 0
             
-            # Enviar mensaje de WIN
             if self.on_result:
                 self.on_result(f"✅ WIN\nRacha: {self.consecutive_wins}", True)
-            
-            # Limpiar predicción y generar nueva inmediatamente
-            self.last_prediction = None
-            self._make_prediction()
-            
-            # Enviar nuevo historial después de la predicción
-            if self.on_status:
-                historial = self._get_historial_str()
-                estado = self._get_estado_str()
-                last_color = self.session_history[-1] if self.session_history else None
-                if last_color:
-                    color_emoji = "🔴" if last_color == 'red' else "🔵"
-                    color_text = "ROJO" if last_color == 'red' else "AZUL"
-                    self.on_status(f"{color_emoji} {color_text}\nHistorial: {historial}\nEstado: {estado}")
-            
         else:
             self.consecutive_losses += 1
             self.consecutive_wins = 0
             self.total_losses += 1
-            self.waiting_for_pattern = True
-            self.waiting_rounds = self.min_wait_rounds
+            self.rounds_to_wait = 1
             
-            # Enviar mensaje de LOSS
             if self.on_result:
-                self.on_result(f"❌ LOSS\nRacha: {self.consecutive_losses}", False)
-            
-            self.last_prediction = None
+                self.on_result(f"❌ LOSS\nRacha: {self.consecutive_losses}\n⏳ Esperando 1 ronda", False)
+        
+        self.pending_bet = None
+    
+    def _make_prediction(self):
+        minority_color = self._get_minority_color()
+        pred_emoji = "🔴" if minority_color == 'red' else "🔵"
+        
+        self.pending_bet = minority_color
+        
+        if self.on_prediction:
+            self.on_prediction(f"SEÑAL {pred_emoji}")
+    
+    def reset(self):
+        self.history_window.clear()
+        self.pending_bet = None
+        self.last_color = None
+        self.waiting_for_5 = True
+        self.waiting_for_pattern = False
+        self.rounds_to_wait = 0
+        self.consecutive_wins = 0
+        self.consecutive_losses = 0
 
-# ==================== POLLING GLOBAL CON RECONEXIÓN ====================
+# ==================== POLLING GLOBAL ====================
 class GlobalPolling:
     _instance = None
     
@@ -397,6 +376,7 @@ class GlobalPolling:
         }
         self._lock = threading.Lock()
         self.reconnect_timeout = 90
+        self.last_shutdown_check = time.time()
     
     def register_user(self, user_id: int, on_status=None, on_prediction=None, on_result=None) -> UserPredictor:
         with self._lock:
@@ -434,6 +414,13 @@ class GlobalPolling:
     
     def _polling_loop(self):
         while self.running:
+            # Verificar apagado por horario cada 60 segundos
+            if time.time() - self.last_shutdown_check > 60:
+                self.last_shutdown_check = time.time()
+                if should_shutdown():
+                    print("🛑 Apagando bot por horario...")
+                    os._exit(0)
+            
             try:
                 if time.time() - self.last_color_time > self.reconnect_timeout:
                     self._reconnect()
@@ -469,7 +456,7 @@ class PredictionBot:
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
     
-    async def _send_message(self, user_id: int, text: str, parse_mode: str = 'Markdown'):
+    async def _send_message(self, user_id: int, text: str, parse_mode: str = None):
         try:
             if self.application:
                 await self.application.bot.send_message(
@@ -483,7 +470,7 @@ class PredictionBot:
         except Exception as e:
             print(f"❌ Error enviando mensaje: {e}")
     
-    def _sync_send_message(self, user_id: int, text: str, parse_mode: str = 'Markdown'):
+    def _sync_send_message(self, user_id: int, text: str, parse_mode: str = None):
         if self.application:
             asyncio.run_coroutine_threadsafe(self._send_message(user_id, text, parse_mode), self.loop)
     
@@ -494,10 +481,10 @@ class PredictionBot:
         if not license_check['valid']:
             keyboard = [[InlineKeyboardButton("💰 Comprar Licencia", callback_data='buy_license')]]
             await update.message.reply_text(
-                "🔒 *ACCESO RESTRINGIDO*\n\nNo tienes licencia activa.\n\n"
-                "💰 *PRECIOS:*\n• 30 días: 10 USDT\n• 6 meses: 35 USDT\n• 1 año: 50 USDT\n• Multiuser Lifetime: 45 USDT\n\n"
+                "🔒 ACCESO RESTRINGIDO\n\nNo tienes licencia activa.\n\n"
+                "💰 PRECIOS:\n• 30 días: 10 USDT\n• 6 meses: 35 USDT\n• 1 año: 50 USDT\n• Multiuser Lifetime: 45 USDT\n\n"
                 "Usa /comprar para obtener una.",
-                reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown'
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return
         
@@ -508,9 +495,11 @@ class PredictionBot:
             [InlineKeyboardButton("💰 Comprar Licencia", callback_data='buy_license')]
         ]
         await update.message.reply_text(
-            f"🎰 *PREDICTOR PRO BOT*\n\n✅ Licencia: {license_check['data']['plan']}\n"
-            f"👥 Tipo: {license_check['data']['type']}\n\nSelecciona un modo:",
-            reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown'
+            f"🎰 PREDICTOR PRO BOT\n\n✅ Licencia: {license_check['data']['plan']}\n"
+            f"👥 Tipo: {license_check['data']['type']}\n"
+            f"👥 Máximo cuentas: {license_check['data'].get('max_users', 1)}\n\n"
+            f"Selecciona un modo:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
     async def signals_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -534,13 +523,9 @@ class PredictionBot:
         self.user_sessions[user_id] = {'mode': 'signals'}
         
         await query.edit_message_text(
-            "📡 *MODO SEÑALES ACTIVADO*\n\n"
-            "Recibirás mensajes con el formato:\n"
-            "🔴/🔵 + Historial + Estado\n"
-            "SEÑAL + color\n"
-            "WIN/LOSS + racha\n\n"
-            "Usa /stop para detener.",
-            parse_mode='Markdown'
+            "📡 MODO SEÑALES ACTIVADO\n\n"
+            "Recibirás el historial, estado y señales.\n\n"
+            "Usa /stop para detener."
         )
     
     async def auto_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -549,39 +534,76 @@ class PredictionBot:
         user_id = update.effective_user.id
         license_check = self.license_manager.check_license(user_id)
         max_accounts = license_check['data'].get('max_users', 1)
+        plan_type = license_check['data'].get('type', 'single')
         
-        await query.edit_message_text(
-            f"🤖 *MODO AUTOMÁTICO*\n\n👥 Máximo de cuentas: {max_accounts}\n\n"
-            "Envía tus credenciales:\n`usuario:contraseña`\n\n"
-            f"{'Para varias: `user1:pass1,user2:pass2`' if max_accounts > 1 else ''}\n\n"
-            "Ejemplo: `juan123:miPass123`\n\n"
-            "⚠️ *IMPORTANTE:* Después del login, deberás CONFIGURAR las apuestas.",
-            parse_mode='Markdown'
+        mensaje = (
+            f"🤖 MODO AUTOMÁTICO\n\n"
+            f"📋 Licencia: {license_check['data']['plan']}\n"
+            f"👥 Tipo: {plan_type}\n"
+            f"🔢 Cuentas permitidas: {max_accounts}\n\n"
         )
+        
+        if max_accounts > 1:
+            mensaje += (
+                f"Envía las credenciales separadas por comas:\n"
+                f"usuario1:contraseña1,usuario2:contraseña2\n\n"
+                f"Ejemplo:\n"
+                f"juan123:abc123,maria456:xyz789"
+            )
+        else:
+            mensaje += (
+                f"Envía tus credenciales:\n"
+                f"usuario:contraseña\n\n"
+                f"Ejemplo:\n"
+                f"juan123:abc123"
+            )
+        
+        await query.edit_message_text(mensaje)
         context.user_data['awaiting_credentials'] = True
+        context.user_data['max_accounts'] = max_accounts
     
     async def process_credentials(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         text = update.message.text
-        license_check = self.license_manager.check_license(user_id)
-        max_accounts = license_check['data'].get('max_users', 1)
+        max_accounts = context.user_data.get('max_accounts', 1)
         
         accounts_data = []
-        if ',' in text and max_accounts > 1:
-            for cred in text.split(','):
-                if ':' in cred:
-                    u, p = cred.strip().split(':', 1)
-                    accounts_data.append((u, p))
+        
+        if ',' in text:
+            parts = text.split(',')
+            for part in parts:
+                part = part.strip()
+                if ':' in part:
+                    u, p = part.split(':', 1)
+                    accounts_data.append((u.strip(), p.strip()))
         elif ':' in text:
-            u, p = text.strip().split(':', 1)
-            accounts_data.append((u, p))
+            u, p = text.split(':', 1)
+            accounts_data.append((u.strip(), p.strip()))
         else:
-            await update.message.reply_text("❌ Formato incorrecto. Usa: usuario:contraseña")
+            await update.message.reply_text(
+                "❌ Formato incorrecto.\n\n"
+                "Usa:\n"
+                "usuario:contraseña\n\n"
+                "O para múltiples cuentas:\n"
+                "user1:pass1,user2:pass2"
+            )
+            context.user_data['awaiting_credentials'] = False
             return
         
         if len(accounts_data) > max_accounts:
-            await update.message.reply_text(f"❌ Máximo {max_accounts} cuentas")
+            await update.message.reply_text(
+                f"❌ Tu licencia permite máximo {max_accounts} cuentas.\n"
+                f"Enviaste {len(accounts_data)} cuentas."
+            )
+            context.user_data['awaiting_credentials'] = False
             return
+        
+        if len(accounts_data) == 0:
+            await update.message.reply_text("❌ No se detectaron credenciales válidas.")
+            context.user_data['awaiting_credentials'] = False
+            return
+        
+        await update.message.reply_text(f"🔄 Probando {len(accounts_data)} cuenta(s)...")
         
         accounts = []
         for username, password in accounts_data:
@@ -594,6 +616,8 @@ class PredictionBot:
                 await update.message.reply_text(f"❌ {username}: {msg}")
         
         if accounts:
+            await update.message.reply_text(f"✅ {len(accounts)} cuenta(s) conectada(s) correctamente.")
+            
             if not self.global_polling.running:
                 self.global_polling.start()
             
@@ -602,12 +626,10 @@ class PredictionBot:
             
             def on_prediction(msg):
                 self._sync_send_message(user_id, msg)
-                # Verificar si auto-bet está activado
                 if self.user_sessions.get(user_id, {}).get('auto_betting_active'):
-                    # Extraer color del mensaje "SEÑAL 🔴" o "SEÑAL 🔵"
-                    if '🔴' in msg:
+                    if 'SEÑAL 🔴' in msg:
                         color = 'red'
-                    elif '🔵' in msg:
+                    elif 'SEÑAL 🔵' in msg:
                         color = 'blue'
                     else:
                         color = None
@@ -638,6 +660,8 @@ class PredictionBot:
                 }
             }
             await self.show_betting_config(update, user_id)
+        else:
+            await update.message.reply_text("❌ No se pudo conectar ninguna cuenta. Verifica tus credenciales.")
         
         context.user_data['awaiting_credentials'] = False
     
@@ -649,8 +673,6 @@ class PredictionBot:
         print(f"💰 Ejecutando apuestas para usuario {user_id} - Color: {color}")
         
         for account in session.get('accounts', []):
-            print(f"   Cuenta: {account.username} - Activa: {account.betting_active} - Balance: ${account.balance} - Apuesta: ${account.current_bet}")
-            
             if not account.betting_active:
                 continue
             if account.balance <= 0:
@@ -674,8 +696,6 @@ class PredictionBot:
         if not session:
             return
         
-        print(f"📊 Actualizando apuestas - Usuario {user_id} - {'WIN' if won else 'LOSS'}")
-        
         for account in session.get('accounts', []):
             if not account.betting_active:
                 continue
@@ -697,7 +717,7 @@ class PredictionBot:
         session = self.user_sessions.get(user_id)
         if not session:
             return
-        msg = "💰 *SALDOS ACTUALIZADOS*\n\n"
+        msg = "💰 SALDOS ACTUALIZADOS\n\n"
         for acc in session.get('accounts', []):
             acc.get_balance()
             msg += f"• {acc.username}: ${acc.balance:.2f}\n"
@@ -719,31 +739,30 @@ class PredictionBot:
         ]
         
         msg = (
-            f"⚙️ *CONFIGURACIÓN*\n\n"
+            f"⚙️ CONFIGURACIÓN\n\n"
             f"💰 Apuesta actual: ${config['current_bet']}\n"
             f"🎲 Martingala: {'✅' if config['use_martingale'] else '❌'}\n"
-            f"⚡ Agresiva: {'✅' if config['use_aggressive'] else '❌'}\n\n"
-            f"Configura y presiona INICIAR"
+            f"⚡ Agresiva: {'✅' if config['use_aggressive'] else '❌'}"
         )
         
         if update.callback_query:
-            await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
         else:
-            await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
     
     async def cfg_initial(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text("💰 Envía nuevo monto inicial (mínimo 0.1):\nEj: `0.5`", parse_mode='Markdown')
+        await update.callback_query.edit_message_text("💰 Envía nuevo monto inicial (mínimo 0.1):\nEj: 0.5")
         context.user_data['awaiting_initial_bet'] = True
     
     async def cfg_max_bet(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text("📈 Envía monto máximo:\nEj: `10.0`", parse_mode='Markdown')
+        await update.callback_query.edit_message_text("📈 Envía monto máximo:\nEj: 10.0")
         context.user_data['awaiting_max_bet'] = True
     
     async def cfg_max_losses(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.callback_query.answer()
-        await update.callback_query.edit_message_text("🛑 Envía número máximo de pérdidas:\nEj: `5`", parse_mode='Markdown')
+        await update.callback_query.edit_message_text("🛑 Envía número máximo de pérdidas:\nEj: 5")
         context.user_data['awaiting_max_losses'] = True
     
     async def cfg_martingale(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -838,14 +857,14 @@ class PredictionBot:
         self.user_sessions[user_id]['auto_betting_active'] = True
         
         await update.callback_query.edit_message_text(
-            f"✅ *AUTO-BET ACTIVADO*\n\n"
+            f"✅ AUTO-BET ACTIVADO\n\n"
             f"💰 Inicial: ${config['initial_bet']}\n"
             f"📈 Máximo: ${config['max_bet']}\n"
             f"🛑 Max Losses: {config['max_losses']}\n"
             f"🎲 Martingala: {'✅' if config['use_martingale'] else '❌'}\n"
             f"⚡ Agresiva: {'✅' if config['use_aggressive'] else '❌'}\n\n"
-            f"Usa /stop para detener.",
-            parse_mode='Markdown'
+            f"📊 Cuentas activas: {len(self.user_sessions[user_id]['accounts'])}\n\n"
+            f"Usa /stop para detener."
         )
     
     async def view_balances(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -854,17 +873,17 @@ class PredictionBot:
         if not session:
             await update.callback_query.answer("No hay sesión")
             return
-        msg = "💰 *BALANCES*\n\n"
+        msg = "💰 BALANCES\n\n"
         for acc in session.get('accounts', []):
             acc.get_balance()
             msg += f"• {acc.username}: ${acc.balance:.2f}\n"
-        await update.callback_query.edit_message_text(msg, parse_mode='Markdown')
+        await update.callback_query.edit_message_text(msg)
     
     async def buy_license(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton(f"{p['name']} - {p['price']} USDT", callback_data=f'plan_{pid}')] for pid, p in LICENSE_PLANS.items()]
         await update.callback_query.edit_message_text(
-            "💰 *COMPRAR LICENCIA*\n\nSelecciona un plan:",
-            reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown'
+            "💰 COMPRAR LICENCIA\n\nSelecciona un plan:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
     async def select_plan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -887,17 +906,16 @@ class PredictionBot:
         ]
         
         await query.edit_message_text(
-            f"💸 *PAGO REQUERIDO*\n\n"
+            f"💸 PAGO REQUERIDO\n\n"
             f"📦 Plan: {plan['name']}\n"
             f"💰 Monto: {plan['price']} USDT\n"
             f"🔗 Red: BEP20\n\n"
-            f"📤 *Wallet:*\n`{MY_WALLET_BEP20}`\n\n"
+            f"📤 Wallet:\n{MY_WALLET_BEP20}\n\n"
             f"1️⃣ Transferir {plan['price']} USDT\n"
             f"2️⃣ Toca 📸 Enviar Comprobante\n"
             f"3️⃣ Adjunta CAPTURA\n\n"
-            f"🆔 ID: `{user_id}`",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
+            f"🆔 ID: {user_id}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
     
     async def send_payment_proof(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -910,9 +928,8 @@ class PredictionBot:
             return
         
         await query.edit_message_text(
-            "📸 *ENVÍA CAPTURA*\n\n"
-            "Envía la imagen con el TXID",
-            parse_mode='Markdown'
+            "📸 ENVÍA CAPTURA\n\n"
+            "Envía la imagen con el TXID"
         )
         context.user_data['awaiting_payment_proof'] = True
     
@@ -936,13 +953,13 @@ class PredictionBot:
             txid = txid_match.group(0)
         
         admin_msg = (
-            f"🆕 *NUEVO PAGO*\n\n"
+            f"🆕 NUEVO PAGO\n\n"
             f"👤 @{username}\n"
-            f"🆔 `{user_id}`\n"
+            f"🆔 {user_id}\n"
             f"📦 {plan_name}\n"
             f"💰 {amount} USDT\n"
-            f"📝 `{txid}`\n\n"
-            f"✅ `/validar {user_id} {plan_info['plan']}`"
+            f"📝 {txid}\n\n"
+            f"✅ /validar {user_id} {plan_info['plan']}"
         )
         
         try:
@@ -951,16 +968,14 @@ class PredictionBot:
                 await self.application.bot.send_photo(
                     chat_id=ADMIN_GROUP_ID,
                     photo=photo.file_id,
-                    caption=admin_msg,
-                    parse_mode='Markdown'
+                    caption=admin_msg
                 )
             elif update.message.document:
                 doc = update.message.document
                 await self.application.bot.send_document(
                     chat_id=ADMIN_GROUP_ID,
                     document=doc.file_id,
-                    caption=admin_msg,
-                    parse_mode='Markdown'
+                    caption=admin_msg
                 )
             else:
                 await update.message.reply_text("❌ Envía una imagen")
@@ -980,10 +995,12 @@ class PredictionBot:
             expiry = datetime.fromisoformat(data['expiry'])
             days = (expiry - datetime.now()).days
             await update.callback_query.edit_message_text(
-                f"📜 *LICENCIA*\n\nPlan: {data['plan']}\n"
+                f"📜 LICENCIA\n\n"
+                f"Plan: {data['plan']}\n"
+                f"Tipo: {data['type']}\n"
+                f"Max cuentas: {data.get('max_users', 1)}\n"
                 f"Expira: {expiry.strftime('%Y-%m-%d')}\n"
-                f"Días: {days if days < 3650 else '∞'}",
-                parse_mode='Markdown'
+                f"Días: {days if days < 3650 else '∞'}"
             )
         else:
             await update.callback_query.edit_message_text("❌ Sin licencia activa")
@@ -1065,6 +1082,11 @@ class PredictionBot:
         print("🤖 PREDICTOR PRO BOT INICIADO")
         print("=" * 50)
         print(f"👑 Admin ID: {ADMIN_IDS[0]}")
+        print("📊 Estrategia: Minoría + Patrones bloqueados")
+        print("📊 Patrones que NO apuestan: 5 iguales, 🔵🔴🔴🔴🔴, 🔴🔵🔵🔵🔵")
+        print("⏳ Espera: 1 ronda después de cada LOSS")
+        print("👥 Multiuser: Hasta 5 cuentas por usuario")
+        print("🕒 Auto-apagado en horarios: 12pm-1pm, 6pm-7pm, 12am-8am")
         print("=" * 50)
         
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
