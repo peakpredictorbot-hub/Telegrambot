@@ -1,4 +1,4 @@
-# bot.py - PREDICTOR PRO BOT CON AUTO-APAGADO POR HORARIO
+# bot.py - PREDICTOR PRO BOT CON LICENCIA DE PRUEBA
 import json
 import os
 import threading
@@ -7,14 +7,13 @@ import requests
 import asyncio
 import re
 import sys
-import signal
 from collections import deque
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# Intentar importar pytz para zona horaria, si no está, usar timezone simple
+# Intentar importar pytz para zona horaria
 try:
     import pytz
     HAS_PYTZ = True
@@ -28,6 +27,7 @@ ADMIN_GROUP_ID = -1002513713257
 MY_WALLET_BEP20 = "0x621917958C7ac81190e9f876C23D6B9914f31263"
 
 LICENSE_PLANS = {
+    "test_24h": {"price": 0, "days": 1, "type": "single", "name": "🎁 Prueba 24h (GRATIS)"},
     "30d": {"price": 10, "days": 30, "type": "single", "name": "📅 30 Días"},
     "6m": {"price": 35, "days": 180, "type": "single", "name": "📅 6 Meses"},
     "1y": {"price": 50, "days": 365, "type": "single", "name": "📅 1 Año"},
@@ -41,23 +41,20 @@ def auto_stop_check() -> bool:
         tz = pytz.timezone('America/Havana')
         now = datetime.now(tz)
     else:
-        # Fallback: usar UTC-5
         now = datetime.utcnow() - timedelta(hours=5)
     
     hora = now.hour
     
-    # Horarios de APAGADO: 12pm-1pm, 6pm-7pm, 12am-8am
-    if 12 <= hora < 13:  # 12pm a 1pm
+    if 12 <= hora < 13:
         return True
-    elif 18 <= hora < 19:  # 6pm a 7pm
+    elif 18 <= hora < 19:
         return True
-    elif 0 <= hora < 8:  # 12am a 8am
+    elif 0 <= hora < 8:
         return True
     
     return False
 
 def should_shutdown():
-    """Funcióseparaón para verificar apagado"""
     if auto_stop_check():
         print(f"⏹️ Apagando bot por horario. Hora: {datetime.now()}")
         return True
@@ -211,7 +208,7 @@ class UserPredictor:
         self.active = True
         self.waiting_for_5 = True
         self.waiting_for_pattern = False
-        self.rounds_to_wait = 0  # Espera después de LOSS
+        self.rounds_to_wait = 0
         
         self.total_wins = 0
         self.total_losses = 0
@@ -277,11 +274,9 @@ class UserPredictor:
         self.last_color = color
         self.history_window.append(color)
         
-        # Verificar resultado de apuesta pendiente
         if self.pending_bet is not None:
             self._verify_result(color)
         
-        # Manejar espera después de LOSS
         if self.rounds_to_wait > 0:
             self.rounds_to_wait -= 1
             if self.on_status:
@@ -292,13 +287,11 @@ class UserPredictor:
                 self.on_status(f"{color_emoji} {color_text}\nHistorial: {historial}\nEstado: {estado}")
             return
         
-        # Verificar si hay que bloquear por patrón
         if self._should_block():
             self.waiting_for_pattern = True
         else:
             self.waiting_for_pattern = False
         
-        # Enviar estado
         if self.on_status and self.pending_bet is None:
             historial = self._get_historial_str()
             estado = self._get_estado_str()
@@ -306,7 +299,6 @@ class UserPredictor:
             color_text = "ROJO" if color == 'red' else "AZUL"
             self.on_status(f"{color_emoji} {color_text}\nHistorial: {historial}\nEstado: {estado}")
         
-        # Generar nueva predicción
         if self.pending_bet is None and len(self.history_window) >= 5 and not self.waiting_for_pattern:
             self._make_prediction()
     
@@ -414,7 +406,6 @@ class GlobalPolling:
     
     def _polling_loop(self):
         while self.running:
-            # Verificar apagado por horario cada 60 segundos
             if time.time() - self.last_shutdown_check > 60:
                 self.last_shutdown_check = time.time()
                 if should_shutdown():
@@ -474,17 +465,50 @@ class PredictionBot:
         if self.application:
             asyncio.run_coroutine_threadsafe(self._send_message(user_id, text, parse_mode), self.loop)
     
+    async def test_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Comando /test - Activa licencia de prueba por 24 horas"""
+        user_id = update.effective_user.id
+        
+        existing = self.license_manager.check_license(user_id)
+        if existing['valid']:
+            await update.message.reply_text(
+                "❌ Ya tienes una licencia activa.\n"
+                "No puedes activar la prueba si ya tienes licencia."
+            )
+            return
+        
+        if self.license_manager.activate_license(user_id, "test_24h"):
+            await update.message.reply_text(
+                "🎁 *LICENCIA DE PRUEBA ACTIVADA*\n\n"
+                "✅ Duración: 24 horas\n"
+                "✅ Acceso completo a todas las funciones\n\n"
+                "Usa /start para comenzar.\n\n"
+                "⏳ La licencia expirará en 24 horas.",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text("❌ Error al activar la licencia de prueba.")
+    
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         license_check = self.license_manager.check_license(user_id)
         
         if not license_check['valid']:
-            keyboard = [[InlineKeyboardButton("💰 Comprar Licencia", callback_data='buy_license')]]
+            keyboard = [
+                [InlineKeyboardButton("🎁 Probar 24h GRATIS", callback_data='test_license')],
+                [InlineKeyboardButton("💰 Comprar Licencia", callback_data='buy_license')]
+            ]
             await update.message.reply_text(
-                "🔒 ACCESO RESTRINGIDO\n\nNo tienes licencia activa.\n\n"
-                "💰 PRECIOS:\n• 30 días: 10 USDT\n• 6 meses: 35 USDT\n• 1 año: 50 USDT\n• Multiuser Lifetime: 45 USDT\n\n"
-                "Usa /comprar para obtener una.",
-                reply_markup=InlineKeyboardMarkup(keyboard)
+                "🔒 *ACCESO RESTRINGIDO*\n\nNo tienes licencia activa.\n\n"
+                "💰 *PRECIOS:*\n"
+                "• 30 días: 10 USDT\n"
+                "• 6 meses: 35 USDT\n"
+                "• 1 año: 50 USDT\n"
+                "• Multiuser Lifetime: 45 USDT\n\n"
+                "🎁 *PRUEBA GRATIS:* 24 horas con /test\n\n"
+                "Selecciona una opción:",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
             )
             return
         
@@ -880,7 +904,7 @@ class PredictionBot:
         await update.callback_query.edit_message_text(msg)
     
     async def buy_license(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        keyboard = [[InlineKeyboardButton(f"{p['name']} - {p['price']} USDT", callback_data=f'plan_{pid}')] for pid, p in LICENSE_PLANS.items()]
+        keyboard = [[InlineKeyboardButton(f"{p['name']} - {p['price']} USDT", callback_data=f'plan_{pid}')] for pid, p in LICENSE_PLANS.items() if pid != "test_24h"]
         await update.callback_query.edit_message_text(
             "💰 COMPRAR LICENCIA\n\nSelecciona un plan:",
             reply_markup=InlineKeyboardMarkup(keyboard)
@@ -1000,7 +1024,7 @@ class PredictionBot:
                 f"Tipo: {data['type']}\n"
                 f"Max cuentas: {data.get('max_users', 1)}\n"
                 f"Expira: {expiry.strftime('%Y-%m-%d')}\n"
-                f"Días: {days if days < 3650 else '∞'}"
+                f"Días restantes: {days if days < 3650 else '∞'}"
             )
         else:
             await update.callback_query.edit_message_text("❌ Sin licencia activa")
@@ -1023,7 +1047,7 @@ class PredictionBot:
             return
         args = context.args
         if len(args) < 2:
-            await update.message.reply_text("Uso: /validar USER_ID PLAN\nPlanes: 30d, 6m, 1y, lifetime_multiuser")
+            await update.message.reply_text("Uso: /validar USER_ID PLAN\nPlanes: test_24h, 30d, 6m, 1y, lifetime_multiuser")
             return
         user_id = int(args[0])
         plan = args[1]
@@ -1055,6 +1079,7 @@ class PredictionBot:
         self.application = Application.builder().token(self.token).build()
         
         self.application.add_handler(CommandHandler("start", self.start_command))
+        self.application.add_handler(CommandHandler("test", self.test_command))
         self.application.add_handler(CommandHandler("stop", self.stop_command))
         self.application.add_handler(CommandHandler("cancel", self.cancel_command))
         self.application.add_handler(CommandHandler("validar", self.validate_command))
@@ -1086,6 +1111,7 @@ class PredictionBot:
         print("📊 Patrones que NO apuestan: 5 iguales, 🔵🔴🔴🔴🔴, 🔴🔵🔵🔵🔵")
         print("⏳ Espera: 1 ronda después de cada LOSS")
         print("👥 Multiuser: Hasta 5 cuentas por usuario")
+        print("🎁 Licencia de prueba: 24 horas con /test")
         print("🕒 Auto-apagado en horarios: 12pm-1pm, 6pm-7pm, 12am-8am")
         print("=" * 50)
         
