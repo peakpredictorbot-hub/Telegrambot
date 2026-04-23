@@ -1,4 +1,4 @@
-# bot.py - PREDICTOR PRO BOT CON LICENCIA DE PRUEBA
+# bot.py - PREDICTOR PRO BOT (SIN AUTO-APAGADO, SOLO WORKFLOW)
 import json
 import os
 import threading
@@ -6,14 +6,13 @@ import time
 import requests
 import asyncio
 import re
-import sys
 from collections import deque
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# Intentar importar pytz para zona horaria
+# Intentar importar pytz para zona horaria (opcional)
 try:
     import pytz
     HAS_PYTZ = True
@@ -33,32 +32,6 @@ LICENSE_PLANS = {
     "1y": {"price": 50, "days": 365, "type": "single", "name": "📅 1 Año"},
     "lifetime_multiuser": {"price": 45, "days": 9999, "type": "multi", "max_users": 5, "name": "👥 Multiuser Lifetime"}
 }
-
-# ==================== AUTO-APAGADO POR HORARIO ====================
-def auto_stop_check() -> bool:
-    """Verifica si el bot debe apagarse según el horario"""
-    if HAS_PYTZ:
-        tz = pytz.timezone('America/Havana')
-        now = datetime.now(tz)
-    else:
-        now = datetime.utcnow() - timedelta(hours=5)
-    
-    hora = now.hour
-    
-    if 12 <= hora < 13:
-        return True
-    elif 18 <= hora < 19:
-        return True
-    elif 0 <= hora < 8:
-        return True
-    
-    return False
-
-def should_shutdown():
-    if auto_stop_check():
-        print(f"⏹️ Apagando bot por horario. Hora: {datetime.now()}")
-        return True
-    return False
 
 # ==================== LICENCIA MANAGER ====================
 class LicenseManager:
@@ -368,7 +341,6 @@ class GlobalPolling:
         }
         self._lock = threading.Lock()
         self.reconnect_timeout = 90
-        self.last_shutdown_check = time.time()
     
     def register_user(self, user_id: int, on_status=None, on_prediction=None, on_result=None) -> UserPredictor:
         with self._lock:
@@ -406,12 +378,6 @@ class GlobalPolling:
     
     def _polling_loop(self):
         while self.running:
-            if time.time() - self.last_shutdown_check > 60:
-                self.last_shutdown_check = time.time()
-                if should_shutdown():
-                    print("🛑 Apagando bot por horario...")
-                    os._exit(0)
-            
             try:
                 if time.time() - self.last_color_time > self.reconnect_timeout:
                     self._reconnect()
@@ -1120,7 +1086,7 @@ class PredictionBot:
         print("⏳ Espera: 1 ronda después de cada LOSS")
         print("👥 Multiuser: Hasta 5 cuentas por usuario")
         print("🎁 Licencia de prueba: 24 horas en el menú de compra")
-        print("🕒 Auto-apagado en horarios: 12pm-1pm, 6pm-7pm, 12am-8am")
+        print("⏰ Horarios controlados por GitHub Actions")
         print("=" * 50)
         
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
