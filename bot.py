@@ -465,37 +465,13 @@ class PredictionBot:
         if self.application:
             asyncio.run_coroutine_threadsafe(self._send_message(user_id, text, parse_mode), self.loop)
     
-    async def test_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Comando /test - Activa licencia de prueba por 24 horas"""
-        user_id = update.effective_user.id
-        
-        existing = self.license_manager.check_license(user_id)
-        if existing['valid']:
-            await update.message.reply_text(
-                "❌ Ya tienes una licencia activa.\n"
-                "No puedes activar la prueba si ya tienes licencia."
-            )
-            return
-        
-        if self.license_manager.activate_license(user_id, "test_24h"):
-            await update.message.reply_text(
-                "🎁 *LICENCIA DE PRUEBA ACTIVADA*\n\n"
-                "✅ Duración: 24 horas\n"
-                "✅ Acceso completo a todas las funciones\n\n"
-                "Usa /start para comenzar.\n\n"
-                "⏳ La licencia expirará en 24 horas.",
-                parse_mode='Markdown'
-            )
-        else:
-            await update.message.reply_text("❌ Error al activar la licencia de prueba.")
-    
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         license_check = self.license_manager.check_license(user_id)
         
         if not license_check['valid']:
             keyboard = [
-                [InlineKeyboardButton("🎁 Probar 24h GRATIS", callback_data='test_license')],
+                [InlineKeyboardButton("🎁 Probar 24h GRATIS", callback_data='plan_test_24h')],
                 [InlineKeyboardButton("💰 Comprar Licencia", callback_data='buy_license')]
             ]
             await update.message.reply_text(
@@ -505,7 +481,7 @@ class PredictionBot:
                 "• 6 meses: 35 USDT\n"
                 "• 1 año: 50 USDT\n"
                 "• Multiuser Lifetime: 45 USDT\n\n"
-                "🎁 *PRUEBA GRATIS:* 24 horas con /test\n\n"
+                "🎁 *PRUEBA GRATIS:* 24 horas\n\n"
                 "Selecciona una opción:",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode='Markdown'
@@ -904,18 +880,50 @@ class PredictionBot:
         await update.callback_query.edit_message_text(msg)
     
     async def buy_license(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        keyboard = [[InlineKeyboardButton(f"{p['name']} - {p['price']} USDT", callback_data=f'plan_{pid}')] for pid, p in LICENSE_PLANS.items() if pid != "test_24h"]
+        keyboard = [
+            [InlineKeyboardButton("🎁 PRUEBA 24h (GRATIS)", callback_data='plan_test_24h')],
+            [InlineKeyboardButton("📅 30 Días - 10 USDT", callback_data='plan_30d')],
+            [InlineKeyboardButton("📅 6 Meses - 35 USDT", callback_data='plan_6m')],
+            [InlineKeyboardButton("📅 1 Año - 50 USDT", callback_data='plan_1y')],
+            [InlineKeyboardButton("👥 Multiuser Lifetime - 45 USDT", callback_data='plan_lifetime_multiuser')]
+        ]
         await update.callback_query.edit_message_text(
-            "💰 COMPRAR LICENCIA\n\nSelecciona un plan:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            "💰 *COMPRAR LICENCIA*\n\nSelecciona un plan:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
         )
     
     async def select_plan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
         plan_id = query.data.replace('plan_', '')
-        plan = LICENSE_PLANS[plan_id]
         user_id = update.effective_user.id
+        
+        # Si es la prueba, activar directamente sin pedir pago
+        if plan_id == "test_24h":
+            existing = self.license_manager.check_license(user_id)
+            if existing['valid']:
+                await query.edit_message_text("❌ Ya tienes una licencia activa. No puedes activar la prueba.")
+                return
+            
+            if self.license_manager.activate_license(user_id, "test_24h"):
+                await query.edit_message_text(
+                    "🎁 *LICENCIA DE PRUEBA ACTIVADA*\n\n"
+                    "✅ Duración: 24 horas\n"
+                    "✅ Acceso completo a todas las funciones\n\n"
+                    "Usa /start para comenzar.\n\n"
+                    "⏳ La licencia expirará en 24 horas.",
+                    parse_mode='Markdown'
+                )
+            else:
+                await query.edit_message_text("❌ Error al activar la licencia de prueba.")
+            return
+        
+        # Para los planes de pago, continuar normal
+        plan = LICENSE_PLANS.get(plan_id)
+        if not plan:
+            await query.edit_message_text("❌ Plan inválido")
+            return
         
         self.pending_payments[user_id] = {
             'plan': plan_id,
@@ -930,16 +938,17 @@ class PredictionBot:
         ]
         
         await query.edit_message_text(
-            f"💸 PAGO REQUERIDO\n\n"
+            f"💸 *PAGO REQUERIDO*\n\n"
             f"📦 Plan: {plan['name']}\n"
             f"💰 Monto: {plan['price']} USDT\n"
             f"🔗 Red: BEP20\n\n"
-            f"📤 Wallet:\n{MY_WALLET_BEP20}\n\n"
+            f"📤 *Wallet:*\n`{MY_WALLET_BEP20}`\n\n"
             f"1️⃣ Transferir {plan['price']} USDT\n"
             f"2️⃣ Toca 📸 Enviar Comprobante\n"
             f"3️⃣ Adjunta CAPTURA\n\n"
-            f"🆔 ID: {user_id}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            f"🆔 ID: `{user_id}`",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
         )
     
     async def send_payment_proof(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1079,7 +1088,6 @@ class PredictionBot:
         self.application = Application.builder().token(self.token).build()
         
         self.application.add_handler(CommandHandler("start", self.start_command))
-        self.application.add_handler(CommandHandler("test", self.test_command))
         self.application.add_handler(CommandHandler("stop", self.stop_command))
         self.application.add_handler(CommandHandler("cancel", self.cancel_command))
         self.application.add_handler(CommandHandler("validar", self.validate_command))
@@ -1111,7 +1119,7 @@ class PredictionBot:
         print("📊 Patrones que NO apuestan: 5 iguales, 🔵🔴🔴🔴🔴, 🔴🔵🔵🔵🔵")
         print("⏳ Espera: 1 ronda después de cada LOSS")
         print("👥 Multiuser: Hasta 5 cuentas por usuario")
-        print("🎁 Licencia de prueba: 24 horas con /test")
+        print("🎁 Licencia de prueba: 24 horas en el menú de compra")
         print("🕒 Auto-apagado en horarios: 12pm-1pm, 6pm-7pm, 12am-8am")
         print("=" * 50)
         
