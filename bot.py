@@ -1,4 +1,4 @@
-# bot.py - PREDICTOR PRO BOT (CON MODO PEAK-BREAK)
+# bot.py - PREDICTOR PRO BOT (CON MODO PEAK-BREAK CORREGIDO)
 import json
 import os
 import threading
@@ -31,7 +31,7 @@ LICENSE_PLANS = {
     "6m": {"price": 35, "days": 180, "type": "single", "name": "📅 6 Meses"},
     "1y": {"price": 50, "days": 365, "type": "single", "name": "📅 1 Año"},
     "lifetime_multiuser": {"price": 45, "days": 9999, "type": "multi", "max_users": 5, "name": "👥 Multiuser Lifetime"},
-    # NUEVO: Modo Peak-Break
+    # MODO PEAK-BREAK
     "peakbreak_30d": {"price": 15, "days": 30, "type": "peakbreak", "name": "📊 Peak-Break 30 Días"},
     "peakbreak_lifetime": {"price": 60, "days": 9999, "type": "peakbreak", "name": "📊 Peak-Break Lifetime"},
 }
@@ -306,7 +306,7 @@ class UserPredictor:
         self.last_color = color
         self.history_window.append(color)
         
-        if self.pending_bot is not None:
+        if self.pending_bet is not None:
             self._verify_result(color)
         
         if self.rounds_to_wait > 0:
@@ -324,22 +324,22 @@ class UserPredictor:
         else:
             self.waiting_for_pattern = False
         
-        if self.on_status and self.pending_bot is None:
+        if self.on_status and self.pending_bet is None:
             historial = self._get_historial_str()
             estado = self._get_estado_str()
             color_emoji = "🔴" if color == 'red' else "🔵"
             color_text = "ROJO" if color == 'red' else "AZUL"
             self.on_status(f"{color_emoji} {color_text}\nHistorial: {historial}\nEstado: {estado}")
         
-        if self.pending_bot is None and len(self.history_window) >= 5 and not self.waiting_for_pattern:
+        if self.pending_bet is None and len(self.history_window) >= 5 and not self.waiting_for_pattern:
             self._make_prediction()
     
     def _verify_result(self, actual_color: str):
-        is_win = (self.pending_bot == actual_color)
+        is_win = (self.pending_bet == actual_color)
         
         if is_win:
             self.consecutive_wins += 1
-            self.consecutive_osses = 0
+            self.consecutive_losses = 0
             self.total_wins += 1
             self.rounds_to_wait = 0
             
@@ -354,20 +354,20 @@ class UserPredictor:
             if self.on_result:
                 self.on_result(f"❌ LOSS\nRacha: {self.consecutive_losses}\n⏳ Esperando 1 ronda", False)
         
-        self.pending_bot = None
+        self.pending_bet = None
     
     def _make_prediction(self):
         minority_color = self._get_minority_color()
         pred_emoji = "🔴" if minority_color == 'red' else "🔵"
         
-        self.pending_bot = minority_color
+        self.pending_bet = minority_color
         
         if self.on_prediction:
             self.on_prediction(f"SEÑAL {pred_emoji}")
     
     def reset(self):
         self.history_window.clear()
-        self.pending_bot = None
+        self.pending_bet = None
         self.last_color = None
         self.waiting_for_5 = True
         self.waiting_for_pattern = False
@@ -496,15 +496,17 @@ class PredictionBot:
         user_id = update.effective_user.id
         license_check = self.license_manager.check_license(user_id)
         
+        # SIN LICENCIA - Mostrar opciones de compra
         if not license_check['valid']:
             keyboard = [
                 [InlineKeyboardButton("🎁 Probar 24h GRATIS", callback_data='plan_test_24h')],
                 [InlineKeyboardButton("📊 Peak-Break 30 Días", callback_data='plan_peakbreak_30d')],
-                [InlineKeyboardButton("💰 Comprar Licencia", callback_data='buy_license')]
+                [InlineKeyboardButton("📊 Peak-Break Lifetime", callback_data='plan_peakbreak_lifetime')],
+                [InlineKeyboardButton("💰 Ver todos los planes", callback_data='buy_license')]
             ]
             await update.message.reply_text(
                 "🔒 *ACCESO RESTRINGIDO*\n\nNo tienes licencia activa.\n\n"
-                "💰 *PRECIOS:*\n"
+                "💰 *PLANES DISPONIBLES:*\n"
                 "• 30 días: 10 USDT\n"
                 "• 6 meses: 35 USDT\n"
                 "• 1 año: 50 USDT\n"
@@ -518,8 +520,10 @@ class PredictionBot:
             )
             return
         
-        # Menú principal según tipo de licencia
-        license_type = license_check['data'].get('type', 'single')
+        # CON LICENCIA VÁLIDA - Mostrar menú principal
+        license_data = license_check['data']
+        license_type = license_data.get('type', 'single')
+        plan_name = license_data.get('plan', 'unknown')
         
         keyboard = [
             [InlineKeyboardButton("📡 MODO SEÑALES", callback_data='signals_mode')],
@@ -528,15 +532,20 @@ class PredictionBot:
             [InlineKeyboardButton("💰 Comprar Licencia", callback_data='buy_license')]
         ]
         
-        # Añadir info del modo especial si es Peak-Break
+        # Mensaje especial para Peak-Break
         modo_extra = ""
         if license_type == "peakbreak":
-            modo_extra = "\n📊 *MODO PEAK-BREAK ACTIVADO*\n➡️ Apuesta solo después de 2 LOSS seguidos"
+            modo_extra = (
+                "\n\n📊 *MODO PEAK-BREAK ACTIVADO*\n"
+                "➡️ Apuesta solo después de 2 LOSS seguidos\n"
+                "➡️ Después de un WIN, vuelve a esperar 2 LOSS"
+            )
         
         await update.message.reply_text(
-            f"🎰 PREDICTOR PRO BOT\n\n✅ Licencia: {license_check['data']['plan']}\n"
-            f"👥 Tipo: {license_type}\n"
-            f"👥 Máximo cuentas: {license_check['data'].get('max_users', 1)}{modo_extra}\n\n"
+            f"🎰 *PREDICTOR PRO BOT*\n\n"
+            f"✅ Licencia: {plan_name}\n"
+            f"📋 Tipo: {license_type}\n"
+            f"👥 Máximo cuentas: {license_data.get('max_users', 1)}{modo_extra}\n\n"
             f"Selecciona un modo:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
@@ -563,9 +572,10 @@ class PredictionBot:
         self.user_sessions[user_id] = {'mode': 'signals'}
         
         await query.edit_message_text(
-            "📡 MODO SEÑALES ACTIVADO\n\n"
+            "📡 *MODO SEÑALES ACTIVADO*\n\n"
             "Recibirás el historial, estado y señales.\n\n"
-            "Usa /stop para detener."
+            "Usa /stop para detener.",
+            parse_mode='Markdown'
         )
     
     async def auto_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -573,12 +583,17 @@ class PredictionBot:
         await query.answer()
         user_id = update.effective_user.id
         license_check = self.license_manager.check_license(user_id)
+        
+        if not license_check['valid']:
+            await query.edit_message_text("❌ No tienes licencia activa. Usa /start")
+            return
+        
         max_accounts = license_check['data'].get('max_users', 1)
         plan_type = license_check['data'].get('type', 'single')
         is_peakbreak = (plan_type == "peakbreak")
         
         mensaje = (
-            f"🤖 MODO AUTOMÁTICO\n\n"
+            f"🤖 *MODO AUTOMÁTICO*\n\n"
             f"📋 Licencia: {license_check['data']['plan']}\n"
             f"👥 Tipo: {plan_type}\n"
             f"🔢 Cuentas permitidas: {max_accounts}\n"
@@ -594,16 +609,16 @@ class PredictionBot:
         if max_accounts > 1:
             mensaje += (
                 f"Envía las credenciales separadas por comas:\n"
-                f"usuario1:contraseña1,usuario2:contraseña2\n\n"
+                f"`usuario1:contraseña1,usuario2:contraseña2`\n\n"
                 f"Ejemplo:\n"
-                f"juan123:abc123,maria456:xyz789"
+                f"`juan123:abc123,maria456:xyz789`"
             )
         else:
             mensaje += (
                 f"Envía tus credenciales:\n"
-                f"usuario:contraseña\n\n"
+                f"`usuario:contraseña`\n\n"
                 f"Ejemplo:\n"
-                f"juan123:abc123"
+                f"`juan123:abc123`"
             )
         
         await query.edit_message_text(mensaje, parse_mode='Markdown')
@@ -633,9 +648,10 @@ class PredictionBot:
             await update.message.reply_text(
                 "❌ Formato incorrecto.\n\n"
                 "Usa:\n"
-                "usuario:contraseña\n\n"
+                "`usuario:contraseña`\n\n"
                 "O para múltiples cuentas:\n"
-                "user1:pass1,user2:pass2"
+                "`user1:pass1,user2:pass2`",
+                parse_mode='Markdown'
             )
             context.user_data['awaiting_credentials'] = False
             return
@@ -657,7 +673,7 @@ class PredictionBot:
         
         accounts = []
         for username, password in accounts_data:
-            # Crear cuenta normal o Peak-Break
+            # Crear cuenta normal o Peak-Break según el tipo de licencia
             if is_peakbreak:
                 acc = PeakBreakAccount(username, password)
             else:
@@ -789,16 +805,16 @@ class PredictionBot:
             return
         is_peakbreak = session.get('is_peakbreak', False)
         
-        msg = "💰 SALDOS ACTUALIZADOS\n\n"
+        msg = "💰 *SALDOS ACTUALIZADOS*\n\n"
         for acc in session.get('accounts', []):
             acc.get_balance()
-            msg += f"• {acc.username}: ${acc.balance:.2f}\n"
+            msg += f"• `{acc.username}`: ${acc.balance:.2f}\n"
             
             # Mostrar estado Peak-Break si aplica
             if is_peakbreak and hasattr(acc, 'get_status'):
                 msg += f"  └─ {acc.get_status()}\n"
         
-        self._sync_send_message(user_id, msg)
+        self._sync_send_message(user_id, msg, parse_mode='Markdown')
     
     async def show_betting_config(self, update, user_id):
         session = self.user_sessions[user_id]
@@ -818,10 +834,10 @@ class PredictionBot:
         
         modo_texto = ""
         if is_peakbreak:
-            modo_texto = "\n📊 *PEAK-BREAK MODE*\n➡️ Apuesta solo después de 2 LOSS seguidos\n"
+            modo_texto = "\n\n📊 *PEAK-BREAK MODE*\n➡️ Apuesta solo después de 2 LOSS seguidos"
         
         msg = (
-            f"⚙️ CONFIGURACIÓN\n\n"
+            f"⚙️ *CONFIGURACIÓN*\n\n"
             f"💰 Apuesta actual: ${config['current_bet']}\n"
             f"🎲 Martingala: {'✅' if config['use_martingale'] else '❌'}\n"
             f"⚡ Agresiva: {'✅' if config['use_aggressive'] else '❌'}{modo_texto}"
@@ -946,18 +962,18 @@ class PredictionBot:
         modo_texto = ""
         if is_peakbreak:
             modo_texto = (
-                f"\n📊 *PEAK-BREAK MODE*\n"
+                f"\n\n📊 *PEAK-BREAK MODE*\n"
                 f"➡️ Apuesta solo después de 2 LOSS seguidos\n"
-                f"➡️ Después de WIN → espera 2 LOSS\n"
+                f"➡️ Después de WIN → espera 2 LOSS"
             )
         
         await update.callback_query.edit_message_text(
-            f"✅ AUTO-BET ACTIVADO\n\n"
+            f"✅ *AUTO-BET ACTIVADO*\n\n"
             f"💰 Inicial: ${config['initial_bet']}\n"
             f"📈 Máximo: ${config['max_bet']}\n"
             f"🛑 Max Losses: {config['max_losses']}\n"
             f"🎲 Martingala: {'✅' if config['use_martingale'] else '❌'}\n"
-            f"⚡ Agresiva: {'✅' if config['use_aggressive'] else '❌'}{modo_texto}\n"
+            f"⚡ Agresiva: {'✅' if config['use_aggressive'] else '❌'}{modo_texto}\n\n"
             f"📊 Cuentas activas: {len(self.user_sessions[user_id]['accounts'])}\n\n"
             f"Usa /stop para detener.",
             parse_mode='Markdown'
@@ -971,14 +987,14 @@ class PredictionBot:
             return
         
         is_peakbreak = session.get('is_peakbreak', False)
-        msg = "💰 BALANCES\n\n"
+        msg = "💰 *BALANCES*\n\n"
         for acc in session.get('accounts', []):
             acc.get_balance()
-            msg += f"• {acc.username}: ${acc.balance:.2f}\n"
+            msg += f"• `{acc.username}`: ${acc.balance:.2f}\n"
             if is_peakbreak and hasattr(acc, 'get_status'):
                 msg += f"  └─ {acc.get_status()}\n"
         
-        await update.callback_query.edit_message_text(msg)
+        await update.callback_query.edit_message_text(msg, parse_mode='Markdown')
     
     async def buy_license(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
@@ -1046,10 +1062,10 @@ class PredictionBot:
             f"💰 Monto: {plan['price']} USDT\n"
             f"🔗 Red: BEP20\n\n"
             f"📤 *Wallet:*\n`{MY_WALLET_BEP20}`\n\n"
-            f"1️⃣ Transferir {plan['price']} USDT (Monto EXACTO)\n"
+            f"1️⃣ Transferir EXACTAMENTE {plan['price']} USDT (BEP20)\n"
             f"2️⃣ Toca 📸 Enviar Comprobante\n"
             f"3️⃣ Adjunta CAPTURA con TXID\n\n"
-            f"🆔 ID: `{user_id}`",
+            f"🆔 Tu ID: `{user_id}`",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
@@ -1064,8 +1080,10 @@ class PredictionBot:
             return
         
         await query.edit_message_text(
-            "📸 ENVÍA CAPTURA\n\n"
-            "Envía la imagen con el TXID"
+            "📸 *ENVÍA CAPTURA*\n\n"
+            "Envía la imagen con el TXID visible.\n\n"
+            "Ejemplo de TXID: `0x...` o código de transacción.",
+            parse_mode='Markdown'
         )
         context.user_data['awaiting_payment_proof'] = True
     
@@ -1089,12 +1107,12 @@ class PredictionBot:
             txid = txid_match.group(0)
         
         admin_msg = (
-            f"🆕 NUEVO PAGO\n\n"
+            f"🆕 *NUEVO PAGO*\n\n"
             f"👤 @{username}\n"
-            f"🆔 {user_id}\n"
+            f"🆔 `{user_id}`\n"
             f"📦 {plan_name}\n"
             f"💰 {amount} USDT\n"
-            f"📝 {txid}\n\n"
+            f"📝 `{txid}`\n\n"
             f"✅ /validar {user_id} {plan_info['plan']}"
         )
         
@@ -1104,46 +1122,61 @@ class PredictionBot:
                 await self.application.bot.send_photo(
                     chat_id=ADMIN_GROUP_ID,
                     photo=photo.file_id,
-                    caption=admin_msg
+                    caption=admin_msg,
+                    parse_mode='Markdown'
                 )
             elif update.message.document:
                 doc = update.message.document
                 await self.application.bot.send_document(
                     chat_id=ADMIN_GROUP_ID,
                     document=doc.file_id,
-                    caption=admin_msg
+                    caption=admin_msg,
+                    parse_mode='Markdown'
                 )
             else:
-                await update.message.reply_text("❌ Envía una imagen")
+                await update.message.reply_text("❌ Envía una imagen o documento con el comprobante.")
                 return
             
-            await update.message.reply_text("✅ Comprobante enviado. Será verificado.")
+            await update.message.reply_text("✅ Comprobante enviado. Será verificado por un administrador.")
             del self.pending_payments[user_id]
             context.user_data['awaiting_payment_proof'] = False
         except Exception as e:
             await update.message.reply_text(f"❌ Error: {str(e)}")
     
     async def license_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
         user_id = update.effective_user.id
         license_check = self.license_manager.check_license(user_id)
+        
         if license_check['valid']:
             data = license_check['data']
             expiry = datetime.fromisoformat(data['expiry'])
             days = (expiry - datetime.now()).days
             extra = ""
+            
             if data.get('type') == "peakbreak":
-                extra = "\n\n📊 *PEAK-BREAK MODE*\n➡️ Apuesta solo después de 2 LOSS seguidos"
-            await update.callback_query.edit_message_text(
-                f"📜 LICENCIA\n\n"
-                f"Plan: {data['plan']}\n"
-                f"Tipo: {data['type']}\n"
-                f"Max cuentas: {data.get('max_users', 1)}\n"
-                f"Expira: {expiry.strftime('%Y-%m-%d')}\n"
-                f"Días restantes: {days if days < 3650 else '∞'}{extra}",
+                extra = (
+                    "\n\n📊 *PEAK-BREAK MODE*\n"
+                    "➡️ Apuesta solo después de 2 LOSS seguidos\n"
+                    "➡️ Después de WIN → espera 2 LOSS"
+                )
+            
+            await query.edit_message_text(
+                f"📜 *INFORMACIÓN DE LICENCIA*\n\n"
+                f"📋 Plan: `{data['plan']}`\n"
+                f"👥 Tipo: `{data['type']}`\n"
+                f"🔢 Máximo cuentas: {data.get('max_users', 1)}\n"
+                f"📅 Activada: {datetime.fromisoformat(data['activated']).strftime('%Y-%m-%d')}\n"
+                f"⏰ Expira: {expiry.strftime('%Y-%m-%d')}\n"
+                f"📆 Días restantes: {days if days < 3650 else '∞'}{extra}",
                 parse_mode='Markdown'
             )
         else:
-            await update.callback_query.edit_message_text("❌ Sin licencia activa")
+            await query.edit_message_text(
+                "❌ *Sin licencia activa*\n\n"
+                "Usa /start para ver los planes disponibles.",
+                parse_mode='Markdown'
+            )
     
     async def stop_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -1151,27 +1184,52 @@ class PredictionBot:
             self.user_sessions[user_id]['auto_betting_active'] = False
             self.global_polling.unregister_user(user_id)
             del self.user_sessions[user_id]
-        await update.message.reply_text("⏹️ Auto-bet detenido. Usa /start")
+        await update.message.reply_text(
+            "⏹️ *Auto-bet detenido*\n\n"
+            "Usa /start para volver a iniciar.",
+            parse_mode='Markdown'
+        )
     
     async def cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
-        await update.message.reply_text("❌ Cancelado")
+        await update.message.reply_text("❌ Operación cancelada.", parse_mode='Markdown')
     
     async def validate_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.effective_user.id not in ADMIN_IDS:
             await update.message.reply_text("❌ No autorizado")
             return
+        
         args = context.args
         if len(args) < 2:
-            await update.message.reply_text("Uso: /validar USER_ID PLAN\nPlanes: test_24h, 30d, 6m, 1y, lifetime_multiuser, peakbreak_30d, peakbreak_lifetime")
+            await update.message.reply_text(
+                "📋 *USO:* `/validar USER_ID PLAN`\n\n"
+                "*PLANES DISPONIBLES:*\n"
+                "• `test_24h` - Prueba 24h\n"
+                "• `30d` - 30 días\n"
+                "• `6m` - 6 meses\n"
+                "• `1y` - 1 año\n"
+                "• `lifetime_multiuser` - Multiuser\n"
+                "• `peakbreak_30d` - Peak-Break 30 días\n"
+                "• `peakbreak_lifetime` - Peak-Break Lifetime",
+                parse_mode='Markdown'
+            )
             return
+        
         user_id = int(args[0])
         plan = args[1]
+        
         if self.license_manager.activate_license(user_id, plan):
-            await update.message.reply_text(f"✅ Licencia {plan} activada para {user_id}")
-            await self._send_message(user_id, f"🎉 ¡Licencia activada! Usa /start")
+            await update.message.reply_text(f"✅ Licencia `{plan}` activada para usuario `{user_id}`", parse_mode='Markdown')
+            await self._send_message(
+                user_id, 
+                f"🎉 *¡LICENCIA ACTIVADA!*\n\n"
+                f"📦 Plan: {plan}\n"
+                f"✅ Ya puedes usar el bot.\n\n"
+                f"Usa /start para comenzar.",
+                parse_mode='Markdown'
+            )
         else:
-            await update.message.reply_text("❌ Plan inválido")
+            await update.message.reply_text("❌ Plan inválido. Verifica la lista de planes.")
     
     async def back_to_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await self.start_command(update, context)
@@ -1189,16 +1247,18 @@ class PredictionBot:
             if update.message.photo or update.message.document:
                 await self.handle_payment_proof(update, context)
             else:
-                await update.message.reply_text("❌ Envía una CAPTURA")
+                await update.message.reply_text("❌ Envía una imagen o documento con el comprobante.")
     
     def run(self):
         self.application = Application.builder().token(self.token).build()
         
+        # Command handlers
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("stop", self.stop_command))
         self.application.add_handler(CommandHandler("cancel", self.cancel_command))
         self.application.add_handler(CommandHandler("validar", self.validate_command))
         
+        # Callback query handlers
         self.application.add_handler(CallbackQueryHandler(self.signals_mode, pattern='signals_mode'))
         self.application.add_handler(CallbackQueryHandler(self.auto_mode, pattern='auto_mode'))
         self.application.add_handler(CallbackQueryHandler(self.buy_license, pattern='buy_license'))
@@ -1214,6 +1274,7 @@ class PredictionBot:
         self.application.add_handler(CallbackQueryHandler(self.license_info, pattern='license_info'))
         self.application.add_handler(CallbackQueryHandler(self.back_to_start, pattern='back_to_start'))
         
+        # Message handlers
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_messages))
         self.application.add_handler(MessageHandler(filters.PHOTO, self.handle_messages))
         self.application.add_handler(MessageHandler(filters.Document.ALL, self.handle_messages))
@@ -1227,7 +1288,8 @@ class PredictionBot:
         print("⏳ Espera: 1 ronda después de cada LOSS")
         print("👥 Multiuser: Hasta 5 cuentas por usuario")
         print("📊 Peak-Break: Apuesta solo después de 2 LOSS seguidos")
-        print("🎁 Licencia de prueba: 24 horas en el menú de compra")
+        print("💰 Precios: Peak-Break Lifetime = 60 USDT")
+        print("🎁 Licencia de prueba: 24 horas")
         print("=" * 50)
         
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
