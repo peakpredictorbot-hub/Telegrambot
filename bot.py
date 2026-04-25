@@ -1,4 +1,4 @@
-# bot.py - PREDICTOR PRO BOT (CON MODO PEAK-BREAK CORREGIDO)
+# bot.py - PREDICTOR PRO BOT (MODO PEAK-BREAK CON 3 LOSS)
 import json
 import os
 import threading
@@ -167,22 +167,23 @@ class UserAccount:
             return f"Same bet: ${self.current_bet:.2f}"
 
 
-# ==================== PEAK-BREAK ACCOUNT (CORREGIDO) ====================
+# ==================== PEAK-BREAK ACCOUNT (CORREGIDO - 3 LOSS) ====================
 class PeakBreakAccount(UserAccount):
     """
     Cuenta especial para el modo Peak-Break.
-    Solo apuesta despues de 2 LOSS seguidos.
+    Solo apuesta despues de 3 LOSS seguidos.
     """
     def __init__(self, username, password):
         super().__init__(username, password)
         self.peakbreak_consecutive_losses = 0  # Contador de LOSS para activacion
         self.peakbreak_active = False  # ¿Estamos en modo apostando?
+        self.PEAKBREAK_THRESHOLD = 3  # ← CAMBIADO DE 2 A 3
     
     def reset_peakbreak(self):
-        """Reset despues de un WIN - volvemos a esperar 2 LOSS"""
+        """Reset despues de un WIN - volvemos a esperar 3 LOSS"""
         self.peakbreak_consecutive_losses = 0
         self.peakbreak_active = False
-        print(f"[PEAK] {self.username}: Reset - esperando 2 LOSS")
+        print(f"[PEAK] {self.username}: Reset - esperando {self.PEAKBREAK_THRESHOLD} LOSS")
     
     def record_loss(self):
         """
@@ -192,9 +193,9 @@ class PeakBreakAccount(UserAccount):
         if not self.peakbreak_active:
             # Estamos esperando - contar LOSS
             self.peakbreak_consecutive_losses += 1
-            print(f"[PEAK] {self.username}: LOSS #{self.peakbreak_consecutive_losses}/2 (esperando)")
+            print(f"[PEAK] {self.username}: LOSS #{self.peakbreak_consecutive_losses}/{self.PEAKBREAK_THRESHOLD} (esperando)")
             
-            if self.peakbreak_consecutive_losses >= 2:
+            if self.peakbreak_consecutive_losses >= self.PEAKBREAK_THRESHOLD:
                 # ¡Se activa el modo!
                 self.peakbreak_active = True
                 self.peakbreak_consecutive_losses = 0
@@ -220,7 +221,7 @@ class PeakBreakAccount(UserAccount):
         if self.peakbreak_active:
             return "⚡ ACTIVO (apostando)"
         else:
-            remaining = 2 - self.peakbreak_consecutive_losses
+            remaining = self.PEAKBREAK_THRESHOLD - self.peakbreak_consecutive_losses
             return f"⏳ Esperando {remaining} LOSS para activar"
 
 
@@ -525,7 +526,7 @@ class PredictionBot:
         
         modo_extra = ""
         if license_type == "peakbreak":
-            modo_extra = "\n\n📊 MODO PEAK-BREAK ACTIVADO\n➡️ Apuesta solo despues de 2 LOSS seguidos\n➡️ Despues de un WIN, vuelve a esperar 2 LOSS"
+            modo_extra = "\n\n📊 MODO PEAK-BREAK ACTIVADO\n➡️ Apuesta solo despues de 3 LOSS seguidos\n➡️ Despues de un WIN, vuelve a esperar 3 LOSS"
         
         await update.message.reply_text(
             f"🎰 PREDICTOR PRO BOT\n\n"
@@ -586,8 +587,8 @@ class PredictionBot:
         if is_peakbreak:
             mensaje += (
                 f"\n📊 MODO PEAK-BREAK ACTIVO\n"
-                f"➡️ Las cuentas SOLO apostaran despues de 2 LOSS seguidos\n"
-                f"➡️ Despues de un WIN, vuelven a esperar 2 LOSS\n\n"
+                f"➡️ Las cuentas SOLO apostaran despues de 3 LOSS seguidos\n"
+                f"➡️ Despues de un WIN, vuelven a esperar 3 LOSS\n\n"
             )
         
         if max_accounts > 1:
@@ -785,7 +786,8 @@ class PredictionBot:
                             self._sync_send_message(user_id, f"📉 {account.username}: {msg}")
                     else:
                         # No estaba activo, solo contar perdida (NO actualizar apuesta)
-                        self._sync_send_message(user_id, f"📊 {account.username}: Perdida registrada ({account.peakbreak_consecutive_losses}/2)")
+                        remaining = account.PEAKBREAK_THRESHOLD - account.peakbreak_consecutive_losses
+                        self._sync_send_message(user_id, f"📊 {account.username}: Perdida registrada ({account.peakbreak_consecutive_losses}/{account.PEAKBREAK_THRESHOLD}) - Faltan {remaining} para activar")
             else:
                 # Modo normal (no Peak-Break)
                 if won:
@@ -836,7 +838,7 @@ class PredictionBot:
         
         modo_texto = ""
         if is_peakbreak:
-            modo_texto = "\n\n📊 PEAK-BREAK MODE\n➡️ Apuesta solo despues de 2 LOSS seguidos"
+            modo_texto = "\n\n📊 PEAK-BREAK MODE\n➡️ Apuesta solo despues de 3 LOSS seguidos"
         
         msg = (
             f"⚙️ CONFIGURACION\n\n"
@@ -964,8 +966,8 @@ class PredictionBot:
         if is_peakbreak:
             modo_texto = (
                 f"\n\n📊 PEAK-BREAK MODE\n"
-                f"➡️ Apuesta solo despues de 2 LOSS seguidos\n"
-                f"➡️ Despues de WIN → espera 2 LOSS"
+                f"➡️ Apuesta solo despues de 3 LOSS seguidos\n"
+                f"➡️ Despues de WIN → espera 3 LOSS"
             )
         
         await update.callback_query.edit_message_text(
@@ -1149,8 +1151,8 @@ class PredictionBot:
             if data.get('type') == "peakbreak":
                 extra = (
                     "\n\n📊 PEAK-BREAK MODE\n"
-                    "➡️ Apuesta solo despues de 2 LOSS seguidos\n"
-                    "➡️ Despues de WIN → espera 2 LOSS"
+                    "➡️ Apuesta solo despues de 3 LOSS seguidos\n"
+                    "➡️ Despues de WIN → espera 3 LOSS"
                 )
             
             await query.edit_message_text(
@@ -1271,7 +1273,7 @@ class PredictionBot:
         print("📊 Patrones que NO apuestan: 5 iguales, 🔵🔴🔴🔴🔴, 🔴🔵🔵🔵🔵")
         print("⏳ Espera: 1 ronda despues de cada LOSS")
         print("👥 Multiuser: Hasta 5 cuentas por usuario")
-        print("📊 Peak-Break: Apuesta solo despues de 2 LOSS seguidos")
+        print("📊 Peak-Break: Apuesta solo despues de 3 LOSS seguidos")  # ← CAMBIADO
         print("💰 Precios: Peak-Break Lifetime = 60 USDT")
         print("🎁 Licencia de prueba: 24 horas")
         print("=" * 50)
