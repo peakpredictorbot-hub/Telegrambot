@@ -1,4 +1,4 @@
-# bot.py - PREDICTOR PRO BOT (MODO PEAK-BREAK CON 3 LOSS)
+# bot.py - PREDICTOR PRO BOT (MODO PEAK-BREAK CON 3 LOSS - CORREGIDO)
 import json
 import os
 import threading
@@ -167,7 +167,7 @@ class UserAccount:
             return f"Same bet: ${self.current_bet:.2f}"
 
 
-# ==================== PEAK-BREAK ACCOUNT (CORREGIDO - 3 LOSS) ====================
+# ==================== PEAK-BREAK ACCOUNT ====================
 class PeakBreakAccount(UserAccount):
     """
     Cuenta especial para el modo Peak-Break.
@@ -175,49 +175,38 @@ class PeakBreakAccount(UserAccount):
     """
     def __init__(self, username, password):
         super().__init__(username, password)
-        self.peakbreak_consecutive_losses = 0  # Contador de LOSS para activacion
-        self.peakbreak_active = False  # ¿Estamos en modo apostando?
-        self.PEAKBREAK_THRESHOLD = 3  # ← CAMBIADO DE 2 A 3
+        self.peakbreak_consecutive_losses = 0
+        self.peakbreak_active = False
+        self.PEAKBREAK_THRESHOLD = 3
     
     def reset_peakbreak(self):
-        """Reset despues de un WIN - volvemos a esperar 3 LOSS"""
         self.peakbreak_consecutive_losses = 0
         self.peakbreak_active = False
         print(f"[PEAK] {self.username}: Reset - esperando {self.PEAKBREAK_THRESHOLD} LOSS")
     
     def record_loss(self):
-        """
-        Registrar una perdida.
-        RETORNA: True si estaba activo (perdio apostando), False si no
-        """
         if not self.peakbreak_active:
-            # Estamos esperando - contar LOSS
             self.peakbreak_consecutive_losses += 1
-            print(f"[PEAK] {self.username}: LOSS #{self.peakbreak_consecutive_losses}/{self.PEAKBREAK_THRESHOLD} (esperando)")
+            print(f"[PEAK] {self.username}: LOSS #{self.peakbreak_consecutive_losses}/{self.PEAKBREAK_THRESHOLD}")
             
             if self.peakbreak_consecutive_losses >= self.PEAKBREAK_THRESHOLD:
-                # ¡Se activa el modo!
                 self.peakbreak_active = True
                 self.peakbreak_consecutive_losses = 0
                 self.betting_active = True
-                print(f"[PEAK] {self.username}: ✅ ACTIVADO! Apostara en la proxima señal")
-            return False  # No estaba activo
+                print(f"[PEAK] {self.username}: ✅ ACTIVADO!")
+            return False
         else:
-            # Ya estamos activos - es una perdida en la racha de apuestas
-            print(f"[PEAK] {self.username}: LOSS en modo activo (racha: {self.consecutive_losses + 1})")
-            return True  # Estaba activo y perdio
+            print(f"[PEAK] {self.username}: LOSS en modo activo")
+            return True
     
     def record_win(self):
-        """Registrar una ganancia - resetea todo el Peak-Break"""
         self.reset_peakbreak()
-        print(f"[PEAK] {self.username}: WIN - Peak-Break reseteado")
+        print(f"[PEAK] {self.username}: WIN - Reseteado")
     
     def should_bet(self) -> bool:
-        """¿Debemos apostar en esta ronda?"""
         return self.peakbreak_active and self.betting_active
     
     def get_status(self) -> str:
-        """Obtener estado para mostrar"""
         if self.peakbreak_active:
             return "⚡ ACTIVO (apostando)"
         else:
@@ -329,6 +318,7 @@ class UserPredictor:
         if self.pending_bet is None and len(self.history_window) >= 5 and not self.waiting_for_pattern:
             self._make_prediction()
     
+    # ==================== FUNCIÓN CORREGIDA ====================
     def _verify_result(self, actual_color: str):
         is_win = (self.pending_bet == actual_color)
         
@@ -341,15 +331,25 @@ class UserPredictor:
             if self.on_result:
                 self.on_result(f"✅ WIN\nRacha: {self.consecutive_wins}", True)
         else:
+            # LOSS
             self.consecutive_losses += 1
             self.consecutive_wins = 0
             self.total_losses += 1
-            self.rounds_to_wait = 1
+            
+            # 🔧 CORREGIDO: Solo esperar si HABÍA una apuesta pendiente
+            if self.pending_bet is not None:
+                self.rounds_to_wait = 1
+            else:
+                self.rounds_to_wait = 0
             
             if self.on_result:
-                self.on_result(f"❌ LOSS\nRacha: {self.consecutive_losses}\n⏳ Esperando 1 ronda", False)
+                if self.rounds_to_wait > 0:
+                    self.on_result(f"❌ LOSS\nRacha: {self.consecutive_losses}\n⏳ Esperando 1 ronda", False)
+                else:
+                    self.on_result(f"❌ LOSS\nRacha: {self.consecutive_losses}", False)
         
         self.pending_bet = None
+    # ==================== FIN CORRECCIÓN ====================
     
     def _make_prediction(self):
         minority_color = self._get_minority_color()
@@ -720,8 +720,6 @@ class PredictionBot:
         
         context.user_data['awaiting_credentials'] = False
     
-    # ==================== FUNCIONES CORREGIDAS ====================
-    
     def _execute_bets(self, user_id: int, color: str, is_peakbreak: bool = False):
         session = self.user_sessions.get(user_id)
         if not session:
@@ -730,7 +728,6 @@ class PredictionBot:
         print(f"💰 Ejecutando apuestas para usuario {user_id} - Color: {color} - PeakBreak: {is_peakbreak}")
         
         for account in session.get('accounts', []):
-            # Para Peak-Break, verificar si debemos apostar
             if is_peakbreak and hasattr(account, 'should_bet'):
                 if not account.should_bet():
                     status = account.get_status()
@@ -766,17 +763,14 @@ class PredictionBot:
             
             if is_peakbreak and hasattr(account, 'record_win') and hasattr(account, 'record_loss'):
                 if won:
-                    # GANO - Resetear todo
                     account.record_win()
                     account.wins += 1
                     account.reset_bet()
                     self._sync_send_message(user_id, f"💰 {account.username}: WIN - Apuesta reiniciada a ${account.current_bet:.2f}")
                 else:
-                    # PERDIO - Verificar si estaba activo o no
                     was_active = account.record_loss()
                     
                     if was_active:
-                        # Estaba activo, actualizar apuesta con Martingala
                         account.losses += 1
                         if account.consecutive_losses + 1 >= account.max_consecutive_losses:
                             self._sync_send_message(user_id, f"🛑 {account.username}: Stop loss alcanzado")
@@ -785,11 +779,8 @@ class PredictionBot:
                             msg = account.update_bet_on_loss()
                             self._sync_send_message(user_id, f"📉 {account.username}: {msg}")
                     else:
-                        # No estaba activo, solo contar perdida (NO actualizar apuesta)
-                        remaining = account.PEAKBREAK_THRESHOLD - account.peakbreak_consecutive_losses
-                        self._sync_send_message(user_id, f"📊 {account.username}: Perdida registrada ({account.peakbreak_consecutive_losses}/{account.PEAKBREAK_THRESHOLD}) - Faltan {remaining} para activar")
+                        self._sync_send_message(user_id, f"📊 {account.username}: Perdida {account.peakbreak_consecutive_losses}/{account.PEAKBREAK_THRESHOLD}")
             else:
-                # Modo normal (no Peak-Break)
                 if won:
                     account.wins += 1
                     account.reset_bet()
@@ -817,8 +808,6 @@ class PredictionBot:
                 msg += f"  └─ {acc.get_status()}\n"
         
         self._sync_send_message(user_id, msg)
-    
-    # ==================== FIN DE FUNCIONES CORREGIDAS ====================
     
     async def show_betting_config(self, update, user_id):
         session = self.user_sessions[user_id]
@@ -1271,9 +1260,9 @@ class PredictionBot:
         print(f"👑 Admin ID: {ADMIN_IDS[0]}")
         print("📊 Estrategia: Minoria + Patrones bloqueados")
         print("📊 Patrones que NO apuestan: 5 iguales, 🔵🔴🔴🔴🔴, 🔴🔵🔵🔵🔵")
-        print("⏳ Espera: 1 ronda despues de cada LOSS")
+        print("⏳ Espera: 1 ronda despues de cada LOSS (solo si se aposto)")
         print("👥 Multiuser: Hasta 5 cuentas por usuario")
-        print("📊 Peak-Break: Apuesta solo despues de 3 LOSS seguidos")  # ← CAMBIADO
+        print("📊 Peak-Break: Apuesta solo despues de 3 LOSS seguidos")
         print("💰 Precios: Peak-Break Lifetime = 60 USDT")
         print("🎁 Licencia de prueba: 24 horas")
         print("=" * 50)
