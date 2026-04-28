@@ -171,13 +171,6 @@ class UserAccount:
 
 # ==================== ESTRATEGIA BASE (ESTÁNDAR) ====================
 class StandardStrategy:
-    """
-    ESTRATEGIA ESTÁNDAR:
-    - Predicción base = último color que salió
-    - Detecta alternancia con 3 colores (🔴🔵🔴 o 🔵🔴🔵)
-    - Después de WIN: apuesta INMEDIATAMENTE
-    - Después de LOSS: espera según patrón 1,2,1,2...
-    """
     def __init__(self, user_id: int):
         self.user_id = user_id
         self.history_window = deque(maxlen=20)
@@ -243,36 +236,38 @@ class StandardStrategy:
             return prediction
         return current_color
     
-    def process_color(self, color: str):
-        if not self.active:
-            return
-        
-        if self.pending_bet is not None:
-            is_win = (self.pending_bet == color)
-            self._verify_result(is_win, color)
-            if is_win:
-                self.history_window.append(color)
-                self._make_prediction()
-                if self.on_status:
-                    self._update_status_display(color)
-                return
-        
-        if self.pending_bet is None:
-            self.history_window.append(color)
-        
+    def _get_historial_str(self):
+        last_10 = list(self.history_window)[-10:] if len(self.history_window) >= 10 else list(self.history_window)
+        history_emojis = ["🔴" if c == 'red' else "🔵" for c in last_10]
+        return ''.join(history_emojis) if history_emojis else "---"
+    
+    def _get_estado_str(self):
         if self.rounds_to_wait > 0:
-            self.rounds_to_wait -= 1
-            if self.rounds_to_wait == 0:
-                self._make_prediction()
-            elif self.on_status:
-                self._update_status_display(color)
+            return f"⏳ Esperando {self.rounds_to_wait} ronda(s) después de LOSS #{self.consecutive_losses}"
+        if self.alternating_mode:
+            return f"🔄 Siguiendo alternancia"
+        return "📊 Siguiendo último color"
+    
+    def _update_status_display(self, current_color: str):
+        color_emoji = "🔴" if current_color == 'red' else "🔵"
+        color_text = "ROJO" if current_color == 'red' else "AZUL"
+        historial = self._get_historial_str()
+        estado = self._get_estado_str()
+        
+        if self.on_status:
+            self.on_status(f"{color_emoji} {color_text}\nHistorial: {historial}\n{estado}")
+    
+    def _make_prediction(self):
+        if self.rounds_to_wait > 0:
             return
-        
-        if self.pending_bet is None:
-            self._make_prediction()
-        
-        if self.on_status and self.pending_bet is None:
-            self._update_status_display(color)
+        prediction = self._get_prediction()
+        if prediction is None:
+            return
+        self.pending_bet = prediction
+        pred_emoji = "🔴" if prediction == 'red' else "🔵"
+        pred_text = "ROJO" if prediction == 'red' else "AZUL"
+        if self.on_prediction:
+            self.on_prediction(f"🎯 SEÑAL: {pred_emoji} {pred_text}")
     
     def _verify_result(self, is_win: bool, result_color: str):
         if is_win:
@@ -291,37 +286,39 @@ class StandardStrategy:
                 self.on_result(f"❌ LOSS #{self.consecutive_losses}\n⏳ Esperando {self.rounds_to_wait} ronda(s)", False)
         self.pending_bet = None
     
-    def _make_prediction(self):
-        if self.rounds_to_wait > 0:
+    def process_color(self, color: str):
+        if not self.active:
             return
-        prediction = self._get_prediction()
-        if prediction is None:
-            return
-        self.pending_bet = prediction
-        pred_emoji = "🔴" if prediction == 'red' else "🔵"
-        pred_text = "ROJO" if prediction == 'red' else "AZUL"
-        if self.on_prediction:
-            self.on_prediction(f"🎯 SEÑAL: {pred_emoji} {pred_text}")
-    
-    def _update_status_display(self, current_color: str):
-        historial = self._get_historial_str()
-        estado = self._get_estado_str()
-        color_emoji = "🔴" if current_color == 'red' else "🔵"
-        color_text = "ROJO" if current_color == 'red' else "AZUL"
-        if self.on_status:
-            self.on_status(f"{color_emoji} {color_text}\nHistorial: {historial}\nEstado: {estado}")
-    
-    def _get_historial_str(self):
-        last_10 = list(self.history_window)[-10:] if len(self.history_window) >= 10 else list(self.history_window)
-        history_emojis = ["🔴" if c == 'red' else "🔵" for c in last_10]
-        return ''.join(history_emojis) if history_emojis else "---"
-    
-    def _get_estado_str(self):
+        
+        # Verificar resultado de apuesta pendiente
+        if self.pending_bet is not None:
+            is_win = (self.pending_bet == color)
+            self._verify_result(is_win, color)
+            # Si fue WIN, agregar color y generar nueva predicción
+            if is_win:
+                self.history_window.append(color)
+                self._update_status_display(color)
+                self._make_prediction()
+                return
+            # Si fue LOSS, no agregar color aún (se agregará abajo)
+        
+        # Agregar color al historial
+        self.history_window.append(color)
+        
+        # Manejar espera post-LOSS
         if self.rounds_to_wait > 0:
-            return f"⏳ Esperando ({self.rounds_to_wait} ronda/s) después de LOSS #{self.consecutive_losses}"
-        if self.alternating_mode:
-            return f"🔄 Siguiendo alternancia"
-        return "📊 Siguiendo último color"
+            self.rounds_to_wait -= 1
+            self._update_status_display(color)
+            if self.rounds_to_wait == 0:
+                self._make_prediction()
+            return
+        
+        # Generar nueva predicción si no hay pendiente
+        if self.pending_bet is None:
+            self._make_prediction()
+        
+        # Actualizar display de estado
+        self._update_status_display(color)
     
     def reset(self):
         self.history_window.clear()
@@ -343,40 +340,86 @@ class PeakBreakStrategy(StandardStrategy):
         self.peak_active = False
         self.loss_streak = 0
     
+    def _update_status_display(self, current_color: str):
+        color_emoji = "🔴" if current_color == 'red' else "🔵"
+        color_text = "ROJO" if current_color == 'red' else "AZUL"
+        historial = self._get_historial_str()
+        
+        if self.peak_active:
+            estado = "⚡ ACTIVO (apostando)"
+            if self.rounds_to_wait > 0:
+                estado = f"⚡ ACTIVO - Esperando {self.rounds_to_wait} ronda(s) después de LOSS #{self.consecutive_losses}"
+        else:
+            remaining = 2 - self.loss_streak
+            if remaining <= 0:
+                remaining = 0
+            estado = f"⏳ Peak-Break: esperando {remaining} LOSS para activar"
+        
+        if self.on_status:
+            self.on_status(f"{color_emoji} {color_text}\nHistorial: {historial}\n{estado}")
+    
     def process_color(self, color: str):
         if not self.active:
             return
         
-        # Contar LOSS consecutivos en el juego
-        if len(self.history_window) >= 1:
-            last_color = list(self.history_window)[-1] if self.history_window else None
-            if last_color == color:
-                self.loss_streak += 1
+        # Verificar resultado de apuesta pendiente (si está activo)
+        if self.peak_active and self.pending_bet is not None:
+            is_win = (self.pending_bet == color)
+            self._verify_result(is_win, color)
+            if is_win:
+                # WIN desactiva el modo Peak-Break
+                self.peak_active = False
+                self.loss_streak = 0
+                self.history_window.append(color)
+                self._update_status_display(color)
+                if self.on_status:
+                    self.on_status(f"🔴 PEAK-BREAK DESACTIVADO (WIN obtenido)")
+                return
+            else:
+                # LOSS: agregar color y continuar
+                self.history_window.append(color)
+                self._update_status_display(color)
+                return
+        
+        # Agregar color al historial SIEMPRE
+        self.history_window.append(color)
+        
+        # Contar LOSS consecutivos en el juego (para activación)
+        if len(self.history_window) >= 2:
+            last_two = list(self.history_window)[-2:]
+            if last_two[0] == last_two[1]:
+                self.loss_streak = 2
             else:
                 self.loss_streak = 1
+        else:
+            self.loss_streak = 1
         
         # Verificar activación por 2 LOSS consecutivos
         if not self.peak_active and self.loss_streak >= 2:
             self.peak_active = True
+            self.rounds_to_wait = 0
             if self.on_status:
                 self.on_status(f"⚡ PEAK-BREAK ACTIVADO (2 LOSS seguidos)")
         
+        # Si no está activo, solo mostrar estado y salir
         if not self.peak_active:
-            if self.on_status:
-                remaining = 2 - self.loss_streak
-                self.on_status(f"⏳ Peak-Break: esperando {remaining} LOSS para activar")
+            self._update_status_display(color)
             return
         
-        # Si está activo, usar lógica estándar
-        super().process_color(color)
-    
-    def _verify_result(self, is_win: bool, result_color: str):
-        super()._verify_result(is_win, result_color)
-        if is_win:
-            self.peak_active = False
-            self.loss_streak = 0
-            if self.on_status:
-                self.on_status(f"🔴 PEAK-BREAK DESACTIVADO (WIN obtenido)")
+        # Si está activo, manejar espera post-LOSS
+        if self.rounds_to_wait > 0:
+            self.rounds_to_wait -= 1
+            self._update_status_display(color)
+            if self.rounds_to_wait == 0:
+                self._make_prediction()
+            return
+        
+        # Generar nueva predicción si no hay pendiente
+        if self.pending_bet is None:
+            self._make_prediction()
+        
+        # Actualizar display
+        self._update_status_display(color)
 
 # ==================== ESTRATEGIA PEAK-GHOST ====================
 class PeakGhostStrategy(StandardStrategy):
@@ -386,45 +429,96 @@ class PeakGhostStrategy(StandardStrategy):
     def __init__(self, user_id: int):
         super().__init__(user_id)
         self.ghost_mode = False
-        self.waiting_for_pattern = False
         self.last_was_win = False
+    
+    def _update_status_display(self, current_color: str):
+        color_emoji = "🔴" if current_color == 'red' else "🔵"
+        color_text = "ROJO" if current_color == 'red' else "AZUL"
+        historial = self._get_historial_str()
+        
+        if self.ghost_mode:
+            estado = "👻 GHOST MODE - Esperando patrón WIN+LOSS en el juego"
+        elif self.rounds_to_wait > 0:
+            estado = f"⏳ Esperando {self.rounds_to_wait} ronda(s) después de LOSS #{self.consecutive_losses}"
+        elif self.alternating_mode:
+            estado = f"🔄 Siguiendo alternancia"
+        else:
+            estado = "📊 Siguiendo último color"
+        
+        if self.on_status:
+            self.on_status(f"{color_emoji} {color_text}\nHistorial: {historial}\n{estado}")
+    
+    def _check_ghost_pattern(self) -> bool:
+        """Busca patrón WIN+LOSS en el historial (alternancia)"""
+        if len(self.history_window) >= 2:
+            last_two = list(self.history_window)[-2:]
+            # Si son diferentes, es WIN+LOSS
+            if last_two[0] != last_two[1]:
+                return True
+        return False
     
     def process_color(self, color: str):
         if not self.active:
             return
         
-        # Si está en modo ghost, buscar patrón WIN + LOSS
-        if self.ghost_mode:
-            # Buscar en el historial del juego
-            if len(self.history_window) >= 2:
-                last_two = list(self.history_window)[-2:]
-                if (last_two[0] != last_two[1]):  # Alternancia = WIN + LOSS
-                    self.ghost_mode = False
-                    self.waiting_for_pattern = False
+        # Verificar resultado de apuesta pendiente (modo normal)
+        if not self.ghost_mode and self.pending_bet is not None:
+            is_win = (self.pending_bet == color)
+            self._verify_result(is_win, color)
+            
+            # Guardar si fue WIN para posible activación de ghost
+            self.last_was_win = is_win
+            
+            if is_win:
+                self.history_window.append(color)
+                self._update_status_display(color)
+                self._make_prediction()
+                return
+            else:
+                # Si fue LOSS y veníamos de un WIN, activar GHOST MODE
+                if self.last_was_win:
+                    self.ghost_mode = True
+                    self.pending_bet = None
+                    self.history_window.append(color)
+                    self._update_status_display(color)
                     if self.on_status:
-                        self.on_status(f"👻 Patrón WIN+LOSS detectado! Reactivando...")
-                    # Procesar el color normalmente
-                    super().process_color(color)
+                        self.on_status(f"👻 PEAK-GHOST ACTIVADO: Esperando patrón WIN+LOSS")
+                    return
+                else:
+                    self.history_window.append(color)
+                    self._update_status_display(color)
+                    return
+        
+        # Agregar color al historial
+        self.history_window.append(color)
+        
+        # Verificar si estamos en GHOST MODE
+        if self.ghost_mode:
+            # Buscar patrón WIN+LOSS en el historial
+            if self._check_ghost_pattern():
+                self.ghost_mode = False
+                self.last_was_win = False
+                if self.on_status:
+                    self.on_status(f"👻 Patrón WIN+LOSS detectado! Reactivando...")
+                # Una vez reactivado, procesar normalmente
+            else:
+                self._update_status_display(color)
+                return
+        
+        # Modo normal: manejar espera post-LOSS
+        if self.rounds_to_wait > 0:
+            self.rounds_to_wait -= 1
+            self._update_status_display(color)
+            if self.rounds_to_wait == 0:
+                self._make_prediction()
             return
         
-        # Modo normal: usar lógica estándar
-        super().process_color(color)
-    
-    def _verify_result(self, is_win: bool, result_color: str):
-        # Guardar resultado anterior
-        prev_was_win = (self.consecutive_wins > 0) or self.last_was_win
+        # Generar nueva predicción si no hay pendiente
+        if self.pending_bet is None:
+            self._make_prediction()
         
-        super()._verify_result(is_win, result_color)
-        
-        # Si tuvimos WIN y ahora LOSS, activar ghost mode
-        if prev_was_win and not is_win:
-            self.ghost_mode = True
-            self.rounds_to_wait = 0
-            self.pending_bet = None
-            if self.on_status:
-                self.on_status(f"👻 PEAK-GHOST ACTIVADO: Esperando patrón WIN+LOSS en el juego")
-        
-        self.last_was_win = is_win
+        # Actualizar display
+        self._update_status_display(color)
 
 # ==================== POLLING GLOBAL ====================
 class GlobalPolling:
@@ -476,7 +570,8 @@ class GlobalPolling:
             if user_id in self.user_strategies:
                 self.user_strategies[user_id].active = False
                 del self.user_strategies[user_id]
-                del self.user_strategy_type[user_id]
+                if user_id in self.user_strategy_type:
+                    del self.user_strategy_type[user_id]
     
     def start(self):
         if self.running:
@@ -624,7 +719,12 @@ class PredictionBot:
             self._sync_send_message(user_id, msg)
         
         # Determinar estrategia a usar
-        strategy_type = allowed_mode if allowed_mode != "flexible" else "standard"
+        if allowed_mode == "flexible":
+            # Multiuser: por defecto usa estándar, pero puede cambiar
+            strategy_type = "standard"
+        else:
+            strategy_type = allowed_mode
+        
         self.global_polling.register_user(user_id, strategy_type, on_status, on_prediction, on_result)
         self.user_sessions[user_id] = {'mode': 'signals', 'strategy': strategy_type}
         
@@ -873,10 +973,10 @@ class PredictionBot:
             f"Agresivo (x2+1): ej: 0.1 → 0.3 → 0.7 → 1.5..."
         )
         
-        if isinstance(update.callback_query, type(None)):
-            await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
-        else:
+        if isinstance(update, Update) and update.callback_query:
             await update.callback_query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
     
     async def cfg_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -1231,7 +1331,7 @@ class PredictionBot:
         self.application.add_handler(MessageHandler(filters.PHOTO, self.handle_messages))
         
         print("=" * 50)
-        print("🤖 PREDICTOR PRO BOT INICIADO")
+        print("🤖 PREDICTOR PRO BOT INICIADO (CORREGIDO)")
         print("=" * 50)
         print("📊 MODOS DE ESTRATEGIA:")
         print("  • ESTÁNDAR - Último color + espera 1,2,1,2...")
