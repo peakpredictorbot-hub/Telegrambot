@@ -13,7 +13,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # ==================== CONFIGURACIÓN ====================
-BOT_TOKEN = "8768792727:AAG-q48_eKMpwgI76KNubtNqQrIkimFODOM"
+BOT_TOKEN = "8758409892:AAElGrpay6Kw5MvRL1TBfQRcK4omW63iQSQ"
 ADMIN_IDS = [5541162744]
 ADMIN_GROUP_ID = -1002513713257
 MY_WALLET_BEP20 = "0x621917958C7ac81190e9f876C23D6B9914f31263"
