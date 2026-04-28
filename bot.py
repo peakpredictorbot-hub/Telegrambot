@@ -14,7 +14,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 
 # ==================== CONFIGURACIÓN ====================
 BOT_TOKEN = "7286614485:AAFv_tLfIJT-qRvlKIwXwVA41eo6cObnuFU"
-ADMIN_IDS = [5541162744]
+ADMIN_IDS = [8051843698]
 ADMIN_GROUP_ID = -1003731875494
 MY_WALLET_BEP20 = "0x621917958C7ac81190e9f876C23D6B9914f31263"
 
