@@ -1,5 +1,5 @@
 # bot.py - PREDICTOR PRO BOT (3 MODOS: ESTÁNDAR, PEAK-BREAK, PEAK-GHOST)
-# VERSIÓN CORREGIDA - CON ENVÍO DE CAPTURA Y GHOST MODE FIX
+# VERSIÓN FINAL - CORREGIDO GHOST MODE Y ENVÍO DE CAPTURAS
 import json
 import os
 import threading
@@ -420,19 +420,22 @@ class PeakBreakStrategy(StandardStrategy):
         if self.pending_bet is None:
             self._make_prediction()
 
-# ==================== ESTRATEGIA PEAK-GHOST (CORREGIDA) ====================
+# ==================== ESTRATEGIA PEAK-GHOST (CORREGIDA FINAL) ====================
 class PeakGhostStrategy(StandardStrategy):
     def __init__(self, user_id: int):
         super().__init__(user_id)
         self.waiting_for_win = False
         self.loss_count = 0
+        self.silent_mode = False
     
     def _update_status_display(self, current_color: str):
         color_emoji = "🔴" if current_color == 'red' else "🔵"
         color_text = "ROJO" if current_color == 'red' else "AZUL"
         historial = self._get_historial_str()
         
-        if self.waiting_for_win:
+        if self.silent_mode:
+            estado = "👻 SILENCIO - Esperando un WIN..."
+        elif self.waiting_for_win:
             estado = "👻 Esperando un WIN..."
         elif self.loss_count > 0:
             estado = f"👻 Buscando 2 LOSS (lleva {self.loss_count})"
@@ -446,7 +449,7 @@ class PeakGhostStrategy(StandardStrategy):
         if not self.active:
             return
         
-        # Verificar apuesta pendiente
+        # ========== 1. VERIFICAR APUESTA PENDIENTE ==========
         if self.pending_bet is not None:
             is_win = (self.pending_bet == color)
             
@@ -462,23 +465,37 @@ class PeakGhostStrategy(StandardStrategy):
             if is_win:
                 # WIN: seguir apostando normal
                 self.history_window.append(color)
+                self.silent_mode = False
                 self.waiting_for_win = False
                 self.loss_count = 0
                 self._update_status_display(color)
                 self._make_prediction()
                 return
             else:
-                # LOSS: activar ghost mode, esperar un WIN
+                # LOSS: activar SILENCIO TOTAL
                 self.history_window.append(color)
-                self.waiting_for_win = True
+                self.silent_mode = True
+                self.waiting_for_win = False
                 self.loss_count = 0
                 self._update_status_display(color)
                 return
         
-        # Agregar color al historial
+        # ========== 2. AGREGAR COLOR AL HISTORIAL ==========
         self.history_window.append(color)
         
-        # Ghost mode: esperando un WIN
+        # ========== 3. MODO SILENCIO (después de LOSS) ==========
+        if self.silent_mode:
+            if len(self.history_window) >= 2:
+                last_two = list(self.history_window)[-2:]
+                if last_two[0] != last_two[1]:
+                    self.silent_mode = False
+                    self.waiting_for_win = True
+                    if self.on_status:
+                        self.on_status("👻 WIN detectado - Buscando 2 LOSS...")
+                    self._update_status_display(color)
+            return
+        
+        # ========== 4. GHOST MODE: ESPERANDO UN WIN ==========
         if self.waiting_for_win:
             if len(self.history_window) >= 2:
                 last_two = list(self.history_window)[-2:]
@@ -486,11 +503,11 @@ class PeakGhostStrategy(StandardStrategy):
                     self.waiting_for_win = False
                     self.loss_count = 0
                     if self.on_status:
-                        self.on_status("👻 WIN detectado - Buscando 2 LOSS...")
+                        self.on_status("👻 Listo - Buscando 2 LOSS...")
                     self._update_status_display(color)
             return
         
-        # Ghost mode: contando LOSS después del WIN
+        # ========== 5. GHOST MODE: CONTANDO LOSS ==========
         if len(self.history_window) >= 2:
             last_two = list(self.history_window)[-2:]
             if last_two[0] == last_two[1]:
@@ -506,10 +523,11 @@ class PeakGhostStrategy(StandardStrategy):
             else:
                 self.loss_count = 0
         
+        # ========== 6. MOSTRAR ESTADO ==========
         self._update_status_display(color)
         
-        # Generar señal normal
-        if self.pending_bet is None and not self.waiting_for_win and self.loss_count == 0:
+        # ========== 7. GENERAR SEÑAL NORMAL ==========
+        if self.pending_bet is None and not self.silent_mode and not self.waiting_for_win and self.loss_count == 0:
             self._make_prediction()
 
 # ==================== POLLING GLOBAL ====================
@@ -1173,7 +1191,6 @@ class PredictionBot:
         )
         context.user_data['awaiting_payment_proof'] = True
     
-    # ========== FUNCIÓN CORREGIDA PARA ENVÍO DE CAPTURA ==========
     async def handle_payment_proof(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         
@@ -1362,7 +1379,7 @@ class PredictionBot:
         print("📊 MODOS DE ESTRATEGIA:")
         print("  • ESTÁNDAR - Último color + espera 1,2,1,2...")
         print("  • PEAK-BREAK - Entrar después de 2 LOSS seguidos")
-        print("  • PEAK-GHOST - WIN aposta, LOSS espera WIN + 2 LOSS")
+        print("  • PEAK-GHOST - WIN sigue apostando, LOSS espera WIN + 2 LOSS")
         print("=" * 50)
         print("💰 PLANES:")
         print("  • Prueba 24h: 0 USDT")
