@@ -1,5 +1,5 @@
 # bot.py - PREDICTOR PRO BOT (3 MODOS: ESTÁNDAR, PEAK-BREAK, PEAK-GHOST)
-# VERSIÓN FINAL - CORREGIDO GHOST MODE Y ENVÍO DE CAPTURAS
+# VERSIÓN FINAL - CON MODO AGRESIVO CORREGIDO (x2 + apuesta inicial)
 import json
 import os
 import threading
@@ -167,13 +167,15 @@ class UserAccount:
     def update_bet_on_loss(self):
         self.consecutive_losses += 1
         if self.use_martingale:
+            # Martingala: x2
             new_bet = min(self.current_bet * 2, self.max_bet)
             self.current_bet = new_bet
             return f"Martingale (x2): ${new_bet:.2f}"
         else:
-            new_bet = min((self.current_bet * 2) + 1, self.max_bet)
+            # Agresivo: (x2) + apuesta inicial
+            new_bet = min((self.current_bet * 2) + self.initial_bet, self.max_bet)
             self.current_bet = new_bet
-            return f"Aggressive (x2+1): ${new_bet:.2f}"
+            return f"Agressive (x2+inicial): ${new_bet:.2f}"
 
 # ==================== ESTRATEGIA BASE (ESTÁNDAR) ====================
 class StandardStrategy:
@@ -426,21 +428,19 @@ class PeakGhostStrategy(StandardStrategy):
         super().__init__(user_id)
         self.waiting_for_win = False
         self.loss_count = 0
-        self.silent_mode = False
+        self.is_active = True
     
     def _update_status_display(self, current_color: str):
         color_emoji = "🔴" if current_color == 'red' else "🔵"
         color_text = "ROJO" if current_color == 'red' else "AZUL"
         historial = self._get_historial_str()
         
-        if self.silent_mode:
-            estado = "👻 SILENCIO - Esperando un WIN..."
-        elif self.waiting_for_win:
-            estado = "👻 Esperando un WIN..."
+        if self.waiting_for_win:
+            estado = "👻 ESPERANDO WIN..."
         elif self.loss_count > 0:
             estado = f"👻 Buscando 2 LOSS (lleva {self.loss_count})"
         else:
-            estado = "📊 Apostando normalmente"
+            estado = "📊 ACTIVO (apostando)"
         
         if self.on_status:
             self.on_status(f"{color_emoji} {color_text}\nHistorial: {historial}\n{estado}")
@@ -449,7 +449,7 @@ class PeakGhostStrategy(StandardStrategy):
         if not self.active:
             return
         
-        # ========== 1. VERIFICAR APUESTA PENDIENTE ==========
+        # ========== 1. APUESTA PENDIENTE ==========
         if self.pending_bet is not None:
             is_win = (self.pending_bet == color)
             
@@ -463,39 +463,27 @@ class PeakGhostStrategy(StandardStrategy):
             self.pending_bet = None
             
             if is_win:
-                # WIN: seguir apostando normal
+                # WIN: seguir activo, apostar de nuevo
                 self.history_window.append(color)
-                self.silent_mode = False
                 self.waiting_for_win = False
                 self.loss_count = 0
+                self.is_active = True
                 self._update_status_display(color)
                 self._make_prediction()
                 return
             else:
-                # LOSS: activar SILENCIO TOTAL
+                # LOSS: activar espera de WIN
                 self.history_window.append(color)
-                self.silent_mode = True
-                self.waiting_for_win = False
+                self.waiting_for_win = True
                 self.loss_count = 0
+                self.is_active = False
                 self._update_status_display(color)
                 return
         
-        # ========== 2. AGREGAR COLOR AL HISTORIAL ==========
+        # ========== 2. AGREGAR COLOR ==========
         self.history_window.append(color)
         
-        # ========== 3. MODO SILENCIO (después de LOSS) ==========
-        if self.silent_mode:
-            if len(self.history_window) >= 2:
-                last_two = list(self.history_window)[-2:]
-                if last_two[0] != last_two[1]:
-                    self.silent_mode = False
-                    self.waiting_for_win = True
-                    if self.on_status:
-                        self.on_status("👻 WIN detectado - Buscando 2 LOSS...")
-                    self._update_status_display(color)
-            return
-        
-        # ========== 4. GHOST MODE: ESPERANDO UN WIN ==========
+        # ========== 3. ESPERANDO WIN ==========
         if self.waiting_for_win:
             if len(self.history_window) >= 2:
                 last_two = list(self.history_window)[-2:]
@@ -503,31 +491,34 @@ class PeakGhostStrategy(StandardStrategy):
                     self.waiting_for_win = False
                     self.loss_count = 0
                     if self.on_status:
-                        self.on_status("👻 Listo - Buscando 2 LOSS...")
+                        self.on_status("👻 WIN detectado - Buscando 2 LOSS...")
                     self._update_status_display(color)
             return
         
-        # ========== 5. GHOST MODE: CONTANDO LOSS ==========
-        if len(self.history_window) >= 2:
-            last_two = list(self.history_window)[-2:]
-            if last_two[0] == last_two[1]:
-                self.loss_count += 1
-                if self.on_status:
-                    self.on_status(f"👻 LOSS #{self.loss_count}")
-                
-                if self.loss_count >= 2:
-                    self.loss_count = 0
+        # ========== 4. BUSCANDO 2 LOSS ==========
+        if self.loss_count > 0 or (len(self.history_window) >= 2 and not self.is_active):
+            if len(self.history_window) >= 2:
+                last_two = list(self.history_window)[-2:]
+                if last_two[0] == last_two[1]:
+                    self.loss_count += 1
                     if self.on_status:
-                        self.on_status("👻 2 LOSS seguidos - APOSTANDO!")
-                    self._make_prediction()
-            else:
-                self.loss_count = 0
+                        self.on_status(f"👻 LOSS #{self.loss_count}")
+                    
+                    if self.loss_count >= 2:
+                        self.loss_count = 0
+                        self.is_active = True
+                        if self.on_status:
+                            self.on_status("👻 2 LOSS seguidos - ACTIVADO! APOSTANDO...")
+                        self._make_prediction()
+                else:
+                    self.loss_count = 0
+            self._update_status_display(color)
+            return
         
-        # ========== 6. MOSTRAR ESTADO ==========
+        # ========== 5. MODO ACTIVO NORMAL ==========
         self._update_status_display(color)
         
-        # ========== 7. GENERAR SEÑAL NORMAL ==========
-        if self.pending_bet is None and not self.silent_mode and not self.waiting_for_win and self.loss_count == 0:
+        if self.is_active and self.pending_bet is None:
             self._make_prediction()
 
 # ==================== POLLING GLOBAL ====================
@@ -967,7 +958,7 @@ class PredictionBot:
             [InlineKeyboardButton(f"💰 Inicial: ${config['initial_bet']}", callback_data='cfg_initial')],
             [InlineKeyboardButton(f"📈 Máximo: ${config['max_bet']}", callback_data='cfg_max_bet')],
             [InlineKeyboardButton(f"🛑 Max Losses: {config['max_losses']}", callback_data='cfg_max_losses')],
-            [InlineKeyboardButton(f"🎲 Modo: {'Martingala (x2)' if config['use_martingale'] else 'Agresivo (x2+1)'}", callback_data='cfg_mode')],
+            [InlineKeyboardButton(f"🎲 Modo: {'Martingala (x2)' if config['use_martingale'] else 'Agresivo (x2+inicial)'}", callback_data='cfg_mode')],
             [InlineKeyboardButton("📊 Ver Balances", callback_data='view_balances')],
             [InlineKeyboardButton("▶️ INICIAR AUTO-BET", callback_data='start_autobet')],
             [InlineKeyboardButton("◀️ Volver", callback_data='back_to_start')]
@@ -976,8 +967,10 @@ class PredictionBot:
         msg = (
             f"⚙️ CONFIGURACIÓN DE APUESTAS\n\n"
             f"💰 Apuesta actual: ${config['current_bet']}\n"
-            f"🎲 Modo: {'Martingala (x2)' if config['use_martingale'] else 'Agresivo (x2+1)'}\n\n"
-            f"Agresivo (x2+1): ej: 0.1 → 0.3 → 0.7 → 1.5..."
+            f"🎲 Modo: {'Martingala (x2)' if config['use_martingale'] else 'Agresivo (x2+inicial)'}\n\n"
+            f"Ejemplo con apuesta inicial $0.10:\n"
+            f"• Martingala: 0.10 → 0.20 → 0.40 → 0.80\n"
+            f"• Agresivo: 0.10 → 0.30 → 0.70 → 1.50"
         )
         
         if hasattr(update, 'callback_query') and update.callback_query:
@@ -991,7 +984,7 @@ class PredictionBot:
         self.user_sessions[user_id]['bet_config']['use_martingale'] = not current
         for acc in self.user_sessions[user_id]['accounts']:
             acc.use_martingale = not current
-        mode = "Martingala (x2)" if not current else "Agresivo (x2+1)"
+        mode = "Martingala (x2)" if not current else "Agresivo (x2+inicial)"
         await update.callback_query.answer(f"Modo cambiado a {mode}")
         await self.show_betting_config(update, user_id)
     
@@ -1079,7 +1072,7 @@ class PredictionBot:
         
         self.user_sessions[user_id]['auto_betting_active'] = True
         
-        modo_texto = "Martingala (x2)" if config['use_martingale'] else "Agresivo (x2+1)"
+        modo_texto = "Martingala (x2)" if config['use_martingale'] else "Agresivo (x2+inicial)"
         
         await update.callback_query.edit_message_text(
             f"✅ AUTO-BET ACTIVADO\n\n"
@@ -1388,8 +1381,14 @@ class PredictionBot:
         print("  • Peak-Ghost 30d: 20 USDT")
         print("  • Multiuser 30d: 45 USDT")
         print("=" * 50)
+        print("🎲 MODOS DE APUESTA:")
+        print("  • Martingala: x2")
+        print("  • Agresivo: (x2) + apuesta inicial")
+        print("  • Ejemplo con $0.10: 0.10 → 0.30 → 0.70 → 1.50")
+        print("=" * 50)
         print("✅ ENVÍO DE CAPTURAS CORREGIDO")
         print("✅ GHOST MODE CORREGIDO")
+        print("✅ MODO AGRESIVO CORREGIDO")
         print("=" * 50)
         
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
