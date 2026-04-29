@@ -1,5 +1,5 @@
 # bot.py - PREDICTOR PRO BOT (3 MODOS: ESTÁNDAR, PEAK-BREAK, PEAK-GHOST)
-# VERSIÓN CORREGIDA - ORDEN: HISTORIAL → SEÑAL → RESULTADO
+# VERSIÓN CORREGIDA - CON ENVÍO DE CAPTURA Y GHOST MODE FIX
 import json
 import os
 import threading
@@ -14,7 +14,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # ==================== CONFIGURACIÓN ====================
-BOT_TOKEN = "7286614485:AAFv_tLfIJT-qRvlKIwXwVA41eo6cObnuFU"
+BOT_TOKEN = "8464375844:AAHyExRmOxw85bvLa6l4CY0abas9iZfOLV4"
 ADMIN_IDS = [5541162744]
 ADMIN_GROUP_ID = -1002513713257
 MY_WALLET_BEP20 = "0x621917958C7ac81190e9f876C23D6B9914f31263"
@@ -291,50 +291,37 @@ class StandardStrategy:
         if not self.active:
             return
         
-        # PRIMERO: Verificar si hay apuesta pendiente
         if self.pending_bet is not None:
             is_win = (self.pending_bet == color)
             
-            # Enviar RESULTADO
             if self.on_result:
                 if is_win:
                     self.on_result(f"✅ WIN\nRacha: {self.consecutive_wins + 1}", True)
                 else:
                     self.on_result(f"❌ LOSS #{self.consecutive_losses + 1}\n⏳ Esperando {self._calculate_wait_rounds()} ronda(s)", False)
             
-            # Actualizar estadísticas
             self._update_stats(is_win)
-            
-            # Limpiar apuesta pendiente
             self.pending_bet = None
             
-            # Si fue WIN, agregar color y generar nueva señal INMEDIATAMENTE
             if is_win:
                 self.history_window.append(color)
                 self._update_status_display(color)
                 self._make_prediction()
                 return
             else:
-                # Si fue LOSS, entrar en espera y NO generar señal ahora
                 self.history_window.append(color)
                 self._update_status_display(color)
                 return
         
-        # SEGUNDO: No hay apuesta pendiente - agregar color al historial
         self.history_window.append(color)
-        
-        # Mostrar estado actual
         self._update_status_display(color)
         
-        # TERCERO: Manejar espera post-LOSS
         if self.rounds_to_wait > 0:
             self.rounds_to_wait -= 1
-            # Si termina la espera, mostrar que ya se puede apostar
             if self.rounds_to_wait == 0 and self.on_status:
                 self.on_status("✅ Espera terminada - preparado para nueva señal")
             return
         
-        # CUARTO: Generar nueva predicción si no hay pendiente
         if self.pending_bet is None:
             self._make_prediction()
     
@@ -377,25 +364,19 @@ class PeakBreakStrategy(StandardStrategy):
         if not self.active:
             return
         
-        # PRIMERO: Verificar si hay apuesta pendiente (solo si está activo)
         if self.peak_active and self.pending_bet is not None:
             is_win = (self.pending_bet == color)
             
-            # Enviar RESULTADO
             if self.on_result:
                 if is_win:
                     self.on_result(f"✅ WIN\nRacha: {self.consecutive_wins + 1}", True)
                 else:
                     self.on_result(f"❌ LOSS #{self.consecutive_losses + 1}", False)
             
-            # Actualizar estadísticas
             self._update_stats(is_win)
-            
-            # Limpiar apuesta pendiente
             self.pending_bet = None
             
             if is_win:
-                # WIN desactiva Peak-Break
                 self.peak_active = False
                 self.loss_streak = 0
                 self.history_window.append(color)
@@ -404,15 +385,12 @@ class PeakBreakStrategy(StandardStrategy):
                     self.on_status("🔴 PEAK-BREAK DESACTIVADO (WIN obtenido)")
                 return
             else:
-                # LOSS: agregar color y continuar activo
                 self.history_window.append(color)
                 self._update_status_display(color)
                 return
         
-        # SEGUNDO: Agregar color al historial
         self.history_window.append(color)
         
-        # TERCERO: Actualizar contador de LOSS consecutivos para activación
         if len(self.history_window) >= 2:
             last_two = list(self.history_window)[-2:]
             if last_two[0] == last_two[1]:
@@ -422,139 +400,116 @@ class PeakBreakStrategy(StandardStrategy):
         else:
             self.loss_streak = 1
         
-        # CUARTO: Verificar activación
         if not self.peak_active and self.loss_streak >= 2:
             self.peak_active = True
             self.rounds_to_wait = 0
             if self.on_status:
                 self.on_status("⚡ PEAK-BREAK ACTIVADO (2 LOSS seguidos)")
         
-        # QUINTO: Mostrar estado actual
         self._update_status_display(color)
         
-        # SEXTO: Si no está activo, no hacer nada más
         if not self.peak_active:
             return
         
-        # SÉPTIMO: Si está activo, manejar espera post-LOSS
         if self.rounds_to_wait > 0:
             self.rounds_to_wait -= 1
             if self.rounds_to_wait == 0 and self.on_status:
                 self.on_status("✅ Espera terminada - preparado para nueva señal")
             return
         
-        # OCTAVO: Generar nueva predicción
         if self.pending_bet is None:
             self._make_prediction()
 
-# ==================== ESTRATEGIA PEAK-GHOST ====================
+# ==================== ESTRATEGIA PEAK-GHOST (CORREGIDA) ====================
 class PeakGhostStrategy(StandardStrategy):
     def __init__(self, user_id: int):
         super().__init__(user_id)
-        self.ghost_mode = False
-        self.last_was_win = False
+        self.waiting_for_win = False
+        self.loss_count = 0
     
     def _update_status_display(self, current_color: str):
         color_emoji = "🔴" if current_color == 'red' else "🔵"
         color_text = "ROJO" if current_color == 'red' else "AZUL"
         historial = self._get_historial_str()
         
-        if self.ghost_mode:
-            estado = "👻 GHOST MODE - Esperando patrón WIN+LOSS"
-        elif self.rounds_to_wait > 0:
-            estado = f"⏳ Esperando {self.rounds_to_wait} ronda(s) después de LOSS #{self.consecutive_losses}"
-        elif self.alternating_mode:
-            estado = f"🔄 Siguiendo alternancia"
+        if self.waiting_for_win:
+            estado = "👻 Esperando un WIN..."
+        elif self.loss_count > 0:
+            estado = f"👻 Buscando 2 LOSS (lleva {self.loss_count})"
         else:
-            estado = "📊 Siguiendo último color"
+            estado = "📊 Apostando normalmente"
         
         if self.on_status:
             self.on_status(f"{color_emoji} {color_text}\nHistorial: {historial}\n{estado}")
-    
-    def _check_ghost_pattern(self) -> bool:
-        if len(self.history_window) >= 2:
-            last_two = list(self.history_window)[-2:]
-            if last_two[0] != last_two[1]:
-                return True
-        return False
     
     def process_color(self, color: str):
         if not self.active:
             return
         
-        # PRIMERO: Verificar si hay apuesta pendiente (modo normal, no ghost)
-        if not self.ghost_mode and self.pending_bet is not None:
+        # Verificar apuesta pendiente
+        if self.pending_bet is not None:
             is_win = (self.pending_bet == color)
             
-            # Enviar RESULTADO
             if self.on_result:
                 if is_win:
-                    self.on_result(f"✅ WIN\nRacha: {self.consecutive_wins + 1}", True)
+                    self.on_result(f"✅ WIN", True)
                 else:
-                    self.on_result(f"❌ LOSS #{self.consecutive_losses + 1}\n⏳ Esperando {self._calculate_wait_rounds()} ronda(s)", False)
+                    self.on_result(f"❌ LOSS", False)
             
-            # Actualizar estadísticas
             self._update_stats(is_win)
-            
-            # Guardar si fue WIN (para posible ghost)
-            self.last_was_win = is_win
-            
-            # Limpiar apuesta pendiente
             self.pending_bet = None
             
             if is_win:
-                # WIN: agregar color y generar nueva señal
+                # WIN: seguir apostando normal
                 self.history_window.append(color)
+                self.waiting_for_win = False
+                self.loss_count = 0
                 self._update_status_display(color)
                 self._make_prediction()
                 return
             else:
-                # LOSS: si veníamos de un WIN, activar GHOST MODE
-                if self.last_was_win:
-                    self.ghost_mode = True
-                    self.history_window.append(color)
-                    self._update_status_display(color)
-                    if self.on_status:
-                        self.on_status("👻 PEAK-GHOST ACTIVADO - Esperando patrón WIN+LOSS")
-                    return
-                else:
-                    # LOSS normal, agregar color y continuar
-                    self.history_window.append(color)
-                    self._update_status_display(color)
-                    return
+                # LOSS: activar ghost mode, esperar un WIN
+                self.history_window.append(color)
+                self.waiting_for_win = True
+                self.loss_count = 0
+                self._update_status_display(color)
+                return
         
-        # SEGUNDO: Agregar color al historial
+        # Agregar color al historial
         self.history_window.append(color)
         
-        # TERCERO: Verificar si estamos en GHOST MODE
-        if self.ghost_mode:
-            if self._check_ghost_pattern():
-                self.ghost_mode = False
-                self.last_was_win = False
-                if self.on_status:
-                    self.on_status("👻 Patrón WIN+LOSS detectado! Reactivando...")
-                # Mostrar estado actualizado
-                self._update_status_display(color)
-                # Generar señal si corresponde
-                if self.pending_bet is None and self.rounds_to_wait == 0:
-                    self._make_prediction()
-                return
-            else:
-                self._update_status_display(color)
-                return
-        
-        # CUARTO: Mostrar estado actual
-        self._update_status_display(color)
-        
-        # QUINTO: Manejar espera post-LOSS
-        if self.rounds_to_wait > 0:
-            self.rounds_to_wait -= 1
-            if self.rounds_to_wait == 0 and self.on_status:
-                self.on_status("✅ Espera terminada - preparado para nueva señal")
+        # Ghost mode: esperando un WIN
+        if self.waiting_for_win:
+            if len(self.history_window) >= 2:
+                last_two = list(self.history_window)[-2:]
+                if last_two[0] != last_two[1]:
+                    self.waiting_for_win = False
+                    self.loss_count = 0
+                    if self.on_status:
+                        self.on_status("👻 WIN detectado - Buscando 2 LOSS...")
+                    self._update_status_display(color)
             return
         
-        # SEXTO: Generar nueva predicción
-        if self.pending_bet is None:
+        # Ghost mode: contando LOSS después del WIN
+        if len(self.history_window) >= 2:
+            last_two = list(self.history_window)[-2:]
+            if last_two[0] == last_two[1]:
+                self.loss_count += 1
+                if self.on_status:
+                    self.on_status(f"👻 LOSS #{self.loss_count}")
+                
+                if self.loss_count >= 2:
+                    self.loss_count = 0
+                    if self.on_status:
+                        self.on_status("👻 2 LOSS seguidos - APOSTANDO!")
+                    self._make_prediction()
+            else:
+                self.loss_count = 0
+        
+        self._update_status_display(color)
+        
+        # Generar señal normal
+        if self.pending_bet is None and not self.waiting_for_win and self.loss_count == 0:
             self._make_prediction()
 
 # ==================== POLLING GLOBAL ====================
@@ -725,7 +680,7 @@ class PredictionBot:
             f"📊 ESTRATEGIAS DISPONIBLES:\n"
             f"• ESTÁNDAR: Apostar al último color, espera 1,2,1,2...\n"
             f"• PEAK-BREAK: Entrar después de 2 LOSS seguidos\n"
-            f"• PEAK-GHOST: WIN→LOSS activa espera hasta ver WIN+LOSS\n\n"
+            f"• PEAK-GHOST: WIN sigue apostando, LOSS espera WIN + 2 LOSS\n\n"
             f"Selecciona una opción:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -1206,14 +1161,25 @@ class PredictionBot:
             await query.edit_message_text("❌ No hay compra pendiente.")
             return
         
+        plan_info = self.pending_payments[user_id]
+        plan_name = LICENSE_PLANS[plan_info['plan']]['name']
+        
         await query.edit_message_text(
-            "📸 ENVIA CAPTURA\n\n"
-            "Envía la imagen con el TXID visible."
+            f"📸 ENVIA CAPTURA\n\n"
+            f"📦 Plan: {plan_name}\n"
+            f"💰 Monto: {plan_info['amount']} USDT\n\n"
+            f"Adjunta la imagen con el TXID visible.\n"
+            f"Puedes escribir el TXID en la descripción."
         )
         context.user_data['awaiting_payment_proof'] = True
     
+    # ========== FUNCIÓN CORREGIDA PARA ENVÍO DE CAPTURA ==========
     async def handle_payment_proof(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
+        
+        if not context.user_data.get('awaiting_payment_proof'):
+            await update.message.reply_text("❌ No hay compra pendiente. Usa /start")
+            return
         
         if user_id not in self.pending_payments:
             await update.message.reply_text("❌ No hay compra pendiente.")
@@ -1225,11 +1191,12 @@ class PredictionBot:
         amount = plan_info['amount']
         username = update.effective_user.username or update.effective_user.first_name
         
+        # Extraer TXID
         txid = "No especificado"
-        caption = update.message.caption or ""
-        txid_match = re.search(r'(0x[a-fA-F0-9]{64}|TXID[:\s]*([a-fA-F0-9]{64}))', caption, re.IGNORECASE)
-        if txid_match:
-            txid = txid_match.group(0)
+        if update.message.caption:
+            txid_match = re.search(r'(0x[a-fA-F0-9]{64})', update.message.caption)
+            if txid_match:
+                txid = txid_match.group(0)
         
         admin_msg = (
             f"🆕 NUEVO PAGO\n\n"
@@ -1249,32 +1216,20 @@ class PredictionBot:
                     photo=photo.file_id,
                     caption=admin_msg
                 )
-                await update.message.reply_text("✅ Comprobante enviado. Será verificado por un administrador.")
+                await update.message.reply_text("✅ Comprobante enviado. En breve será verificado.")
                 del self.pending_payments[user_id]
             else:
                 await update.message.reply_text("❌ Envía una imagen con el comprobante.")
                 return
-            
-            context.user_data['awaiting_payment_proof'] = False
-            
         except Exception as e:
-            error_msg = str(e)
-            print(f"Error enviando a grupo: {error_msg}")
-            
-            if "chat not found" in error_msg.lower() or "bot is not a member" in error_msg.lower():
-                await update.message.reply_text(
-                    f"❌ Error: El bot no está en el grupo de administradores.\n\n"
-                    f"Por favor, añade el bot al grupo con ID: `{ADMIN_GROUP_ID}`\n"
-                    f"Asegúrate de que sea administrador.\n\n"
-                    f"Mientras tanto, envía este mensaje manualmente al administrador:\n\n"
-                    f"Usuario: @{username}\n"
-                    f"ID: {user_id}\n"
-                    f"Plan: {plan_name}\n"
-                    f"Monto: {amount} USDT\n"
-                    f"Comando: /validar {user_id} {plan_info['plan']}"
-                )
-            else:
-                await update.message.reply_text(f"❌ Error al enviar: {error_msg[:200]}")
+            await update.message.reply_text(
+                f"❌ Error: {str(e)[:100]}\n\n"
+                f"Envía manualmente al admin:\n"
+                f"/validar {user_id} {plan_info['plan']}\n"
+                f"Usuario: @{username}"
+            )
+        
+        context.user_data['awaiting_payment_proof'] = False
     
     async def license_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -1402,25 +1357,22 @@ class PredictionBot:
         self.application.add_handler(MessageHandler(filters.PHOTO, self.handle_messages))
         
         print("=" * 50)
-        print("🤖 PREDICTOR PRO BOT INICIADO (VERSIÓN CORREGIDA)")
+        print("🤖 PREDICTOR PRO BOT INICIADO")
         print("=" * 50)
         print("📊 MODOS DE ESTRATEGIA:")
         print("  • ESTÁNDAR - Último color + espera 1,2,1,2...")
         print("  • PEAK-BREAK - Entrar después de 2 LOSS seguidos")
-        print("  • PEAK-GHOST - WIN→LOSS activa espera hasta WIN+LOSS")
+        print("  • PEAK-GHOST - WIN aposta, LOSS espera WIN + 2 LOSS")
         print("=" * 50)
         print("💰 PLANES:")
         print("  • Prueba 24h: 0 USDT")
         print("  • Estándar 30d: 10 USDT")
         print("  • Peak-Break 30d: 15 USDT")
         print("  • Peak-Ghost 30d: 20 USDT")
-        print("  • Multiuser 30d: 45 USDT (5 cuentas, elige modo)")
+        print("  • Multiuser 30d: 45 USDT")
         print("=" * 50)
-        print("🎲 MODOS DE APUESTA:")
-        print("  • Martingala: x2")
-        print("  • Agresivo: (x2)+1")
-        print("=" * 50)
-        print("✅ ORDEN CORRECTO: HISTORIAL → SEÑAL → RESULTADO")
+        print("✅ ENVÍO DE CAPTURAS CORREGIDO")
+        print("✅ GHOST MODE CORREGIDO")
         print("=" * 50)
         
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
