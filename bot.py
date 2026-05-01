@@ -1,5 +1,5 @@
-# bot.py - PREDICTOR PRO BOT (3 MODOS: ESTÁNDAR, PEAK-BREAK, PEAK-GHOST)
-# VERSIÓN DEFINITIVA - GHOST MODE 100% FUNCIONAL
+# bot.py - PREDICTOR PRO BOT (4 MODOS: ESTÁNDAR, PEAK-BREAK, PEAK-GHOST, PEAK-HACK)
+# VERSIÓN DEFINITIVA CON NUEVOS PLANES
 import json
 import os
 import threading
@@ -24,6 +24,7 @@ LICENSE_PLANS = {
     "test_24h": {"price": 0, "days": 1, "mode": "standard", "max_users": 1, "name": "🎁 Prueba 24h (GRATIS)"},
     "standard": {"price": 10, "days": 30, "mode": "standard", "max_users": 1, "name": "📅 Estándar 30 Días"},
     "peakbreak": {"price": 15, "days": 30, "mode": "peakbreak", "max_users": 1, "name": "📊 Peak-Break 30 Días"},
+    "peakhack": {"price": 18, "days": 30, "mode": "peakhack", "max_users": 1, "name": "🔧 Peak Hack 30 Días"},
     "ghost": {"price": 20, "days": 30, "mode": "ghost", "max_users": 1, "name": "👻 Peak-Ghost 30 Días"},
     "multiuser": {"price": 45, "days": 30, "mode": "flexible", "max_users": 5, "name": "👥 Multiuser 30 Días"},
 }
@@ -430,7 +431,26 @@ class PeakBreakStrategy(StandardStrategy):
         if self.pending_bet is None:
             self._make_prediction()
 
-# ==================== ESTRATEGIA PEAK-GHOST (DEFINITIVA) ====================
+# ==================== ESTRATEGIA PEAK HACK (SIEMPRE ESPERA 2 RONDAS) ====================
+class PeakHackStrategy(StandardStrategy):
+    def __init__(self, user_id: int):
+        super().__init__(user_id)
+    
+    def _calculate_wait_rounds(self) -> int:
+        # Después de cualquier pérdida, esperar 2 rondas siempre
+        if self.consecutive_losses <= 0:
+            return 0
+        else:
+            return 2
+    
+    def _get_estado_str(self):
+        if self.rounds_to_wait > 0:
+            return f"⏳ Hack: esperando {self.rounds_to_wait} ronda(s) después de LOSS #{self.consecutive_losses}"
+        if self.alternating_mode:
+            return f"🔄 Siguiendo alternancia"
+        return "📊 Siguiendo último color"
+
+# ==================== ESTRATEGIA PEAK-GHOST (APOSTAR DESPUÉS DE 1 LOSS) ====================
 class PeakGhostStrategy(StandardStrategy):
     def __init__(self, user_id: int):
         super().__init__(user_id)
@@ -446,7 +466,7 @@ class PeakGhostStrategy(StandardStrategy):
         if self.waiting_for_win:
             estado = "👻 ESPERANDO WIN..."
         elif self.waiting_for_losses:
-            estado = f"👻 Buscando 2 LOSS (lleva {self.loss_count})"
+            estado = f"👻 Buscando 1 LOSS (lleva {self.loss_count})"
         else:
             estado = "📊 APOSTANDO"
         
@@ -499,11 +519,11 @@ class PeakGhostStrategy(StandardStrategy):
                     self.waiting_for_losses = True
                     self.loss_count = 0
                     if self.on_status:
-                        self.on_status(f"👻 WIN detectado - Buscando 2 LOSS...")
+                        self.on_status(f"👻 WIN detectado - Buscando 1 LOSS...")
                     self._update_status_display(color)
             return
         
-        # ========== 4. BUSCANDO 2 LOSS DESPUÉS DEL WIN ==========
+        # ========== 4. BUSCANDO 1 LOSS ==========
         if self.waiting_for_losses:
             if len(self.history_window) >= 2:
                 last_two = list(self.history_window)[-2:]
@@ -512,11 +532,11 @@ class PeakGhostStrategy(StandardStrategy):
                     if self.on_status:
                         self.on_status(f"👻 LOSS #{self.loss_count}")
                     
-                    if self.loss_count >= 2:
+                    if self.loss_count >= 1:  # CAMBIADO A 1 LOSS
                         self.waiting_for_losses = False
                         self.loss_count = 0
                         if self.on_status:
-                            self.on_status("👻 2 LOSS seguidos - APOSTANDO!")
+                            self.on_status("👻 1 LOSS - APOSTANDO!")
                         # FORZAR SEÑAL DIRECTAMENTE
                         self.rounds_to_wait = 0
                         prediction = self._get_prediction()
@@ -573,6 +593,8 @@ class GlobalPolling:
                 strategy = StandardStrategy(user_id)
             elif strategy_type == "peakbreak":
                 strategy = PeakBreakStrategy(user_id)
+            elif strategy_type == "peakhack":
+                strategy = PeakHackStrategy(user_id)
             elif strategy_type == "ghost":
                 strategy = PeakGhostStrategy(user_id)
             else:
@@ -663,6 +685,7 @@ class PredictionBot:
                 [InlineKeyboardButton("🎁 Probar 24h GRATIS", callback_data='plan_test_24h')],
                 [InlineKeyboardButton("📅 Estándar 30d - 10 USDT", callback_data='plan_standard')],
                 [InlineKeyboardButton("📊 Peak-Break 30d - 15 USDT", callback_data='plan_peakbreak')],
+                [InlineKeyboardButton("🔧 Peak Hack 30d - 18 USDT", callback_data='plan_peakhack')],
                 [InlineKeyboardButton("👻 Peak-Ghost 30d - 20 USDT", callback_data='plan_ghost')],
                 [InlineKeyboardButton("👥 Multiuser 30d - 45 USDT", callback_data='plan_multiuser')]
             ]
@@ -672,6 +695,7 @@ class PredictionBot:
                 "• Prueba 24h: 0 USDT (solo Estándar)\n"
                 "• Estándar 30d: 10 USDT\n"
                 "• Peak-Break 30d: 15 USDT\n"
+                "• 🔧 Peak Hack 30d: 18 USDT (2 rondas fijas)\n"
                 "• Peak-Ghost 30d: 20 USDT\n"
                 "• Multiuser 30d: 45 USDT (hasta 5 cuentas, elige modo)\n\n"
                 "Selecciona una opción:",
@@ -698,6 +722,8 @@ class PredictionBot:
             mode_msg = "\n\n📌 Tu licencia solo permite modo ESTÁNDAR"
         elif allowed_mode == "peakbreak":
             mode_msg = "\n\n📌 Tu licencia solo permite modo PEAK-BREAK"
+        elif allowed_mode == "peakhack":
+            mode_msg = "\n\n📌 Tu licencia solo permite modo PEAK HACK (2 rondas fijas)"
         elif allowed_mode == "ghost":
             mode_msg = "\n\n📌 Tu licencia solo permite modo PEAK-GHOST"
         
@@ -708,7 +734,8 @@ class PredictionBot:
             f"📊 ESTRATEGIAS DISPONIBLES:\n"
             f"• ESTÁNDAR: Apostar al último color, espera 1,2,1,2...\n"
             f"• PEAK-BREAK: Entrar después de 2 LOSS seguidos\n"
-            f"• PEAK-GHOST: WIN sigue apostando, LOSS espera WIN + 2 LOSS\n\n"
+            f"• 🔧 PEAK HACK: Siempre espera 2 rondas después de cada LOSS\n"
+            f"• PEAK-GHOST: WIN sigue apostando, LOSS espera WIN + 1 LOSS\n\n"
             f"Selecciona una opción:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -778,7 +805,8 @@ class PredictionBot:
                 f"\n📊 SELECCIONA ESTRATEGIA:\n"
                 f"1️⃣ Estándar\n"
                 f"2️⃣ Peak-Break\n"
-                f"3️⃣ Peak-Ghost\n\n"
+                f"3️⃣ Peak Hack\n"
+                f"4️⃣ Peak-Ghost\n\n"
                 f"Envía el número de la estrategia que quieres usar:"
             )
             context.user_data['awaiting_strategy_selection'] = True
@@ -804,12 +832,13 @@ class PredictionBot:
         strategy_map = {
             "1": "standard", "estándar": "standard", "standard": "standard",
             "2": "peakbreak", "peak-break": "peakbreak", "peakbreak": "peakbreak",
-            "3": "ghost", "peak-ghost": "ghost", "peakghost": "ghost"
+            "3": "peakhack", "peak hack": "peakhack", "peakhack": "peakhack",
+            "4": "ghost", "peak-ghost": "ghost", "peakghost": "ghost"
         }
         
         strategy = strategy_map.get(text.lower())
         if not strategy:
-            await update.message.reply_text("❌ Opción inválida. Envía 1, 2 o 3")
+            await update.message.reply_text("❌ Opción inválida. Envía 1, 2, 3 o 4")
             return
         
         context.user_data['selected_strategy'] = strategy
@@ -1122,6 +1151,7 @@ class PredictionBot:
             [InlineKeyboardButton("🎁 PRUEBA 24h (GRATIS)", callback_data='plan_test_24h')],
             [InlineKeyboardButton("📅 Estándar 30d - 10 USDT", callback_data='plan_standard')],
             [InlineKeyboardButton("📊 Peak-Break 30d - 15 USDT", callback_data='plan_peakbreak')],
+            [InlineKeyboardButton("🔧 Peak Hack 30d - 18 USDT", callback_data='plan_peakhack')],
             [InlineKeyboardButton("👻 Peak-Ghost 30d - 20 USDT", callback_data='plan_ghost')],
             [InlineKeyboardButton("👥 Multiuser 30d - 45 USDT", callback_data='plan_multiuser')]
         ]
@@ -1306,6 +1336,7 @@ class PredictionBot:
                 "• test_24h - Prueba 24h (Estándar)\n"
                 "• standard - Estándar 30 días (10 USDT)\n"
                 "• peakbreak - Peak-Break 30 días (15 USDT)\n"
+                "• peakhack - Peak Hack 30 días (18 USDT)\n"
                 "• ghost - Peak-Ghost 30 días (20 USDT)\n"
                 "• multiuser - Multiuser 30 días (45 USDT)\n\n"
                 "Ejemplo: /validar 123456789 standard"
@@ -1391,22 +1422,23 @@ class PredictionBot:
         print("📊 MODOS DE ESTRATEGIA:")
         print("  • ESTÁNDAR - Último color + espera 1,2,1,2...")
         print("  • PEAK-BREAK - Entrar después de 2 LOSS seguidos")
-        print("  • PEAK-GHOST - WIN sigue apostando, LOSS espera WIN + 2 LOSS")
+        print("  • 🔧 PEAK HACK - Espera 2 rondas fijas después de cada LOSS")
+        print("  • PEAK-GHOST - WIN sigue, LOSS espera WIN + 1 LOSS")
         print("=" * 50)
         print("💰 PLANES:")
         print("  • Prueba 24h: 0 USDT")
         print("  • Estándar 30d: 10 USDT")
         print("  • Peak-Break 30d: 15 USDT")
+        print("  • 🔧 Peak Hack 30d: 18 USDT")
         print("  • Peak-Ghost 30d: 20 USDT")
         print("  • Multiuser 30d: 45 USDT")
         print("=" * 50)
         print("🎲 MODOS DE APUESTA:")
         print("  • Martingala: x2")
         print("  • Agresivo: (x2) + apuesta inicial")
-        print("  • Ejemplo: 0.10 → 0.30 → 0.70 → 1.50")
         print("=" * 50)
-        print("✅ GHOST MODE: Espera WIN + 2 LOSS antes de apostar")
-        print("✅ Envío de comprobantes funcionando")
+        print("✅ GHOST MODE: 1 LOSS para activar")
+        print("✅ PEAK HACK: 2 rondas fijas")
         print("=" * 50)
         
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
